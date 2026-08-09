@@ -12,14 +12,26 @@ void _log(String message) {
   }
 }
 
-/// 阅读模式：翻页模式（左右翻页）/ 拼页模式（上下连续滚动）
-enum ReadingMode { pageTurn, continuous }
+/// 漫画阅读模式：左右翻页（横向逐页）/ 消散（当前页淡出、下一页淡入）/ 拼页（上下连续滚动）
+enum ReadingMode { pageTurn, continuous, dissolve }
 
 /// 图书阅读模式：翻页 / 仿真翻页（卷曲）
 enum BookReadingMode { pageTurn, simulation }
 
-/// 启动默认首页（对应底部导航 5 个 tab 的顺序）
-enum DefaultHomePage { manga, book, favorites, downloads, me }
+/// 底部导航 tab 枚举（与导航栏顺序一致）
+enum NavTab { manga, book, bookshelf, favorites, me }
+
+/// 启动默认首页（对应底部导航 tab）
+enum DefaultHomePage { manga, book, bookshelf, favorites, me }
+
+/// NavTab 与 DefaultHomePage 的双向转换辅助（两者值一一对应）
+extension NavTabDefaultHomePageX on NavTab {
+  DefaultHomePage toDefaultHomePage() => DefaultHomePage.values[index];
+}
+
+extension DefaultHomePageNavTabX on DefaultHomePage {
+  NavTab toNavTab() => NavTab.values[index];
+}
 
 /// 应用设置服务（单例 + ChangeNotifier）
 /// 持久化：
@@ -29,6 +41,7 @@ enum DefaultHomePage { manga, book, favorites, downloads, me }
 /// - 阅读模式：翻页 / 拼页
 /// - 在线阅读预加载图片数
 /// - 暗色模式（首次跟随系统，之后保留用户选择）
+/// - 主题跟随系统（默认开启；开启时实时跟随系统明暗，关闭后用手动选择）
 class SettingsService extends ChangeNotifier {
   SettingsService._();
   static final SettingsService _instance = SettingsService._();
@@ -44,12 +57,17 @@ class SettingsService extends ChangeNotifier {
   static const _defaultHomeKey = 'default_home_page';
   static const _kBuiltinAccountKey = 'use_builtin_account';
   static const _kDarkModeKey = 'dark_mode';
+  static const _kThemeFollowSystemKey = 'theme_follow_system';
   static const _kCheckUpdateKey = 'check_update_on_startup';
   static const _kBookFontSizeKey = 'book_font_size';
   static const _kBookLineHeightKey = 'book_line_height';
   static const _kBookHorizontalPaddingKey = 'book_h_padding';
   static const _kBookVerticalPaddingKey = 'book_v_padding';
   static const _kBookReadingModeKey = 'book_reading_mode';
+  static const _kNavVisibleTabsKey = 'nav_visible_tabs';
+  static const _kNavFloatingKey = 'nav_floating';
+  static const _kNavOrderVersionKey =
+      'nav_order_version'; // 导航 tab 顺序版本（v2: 书架与收藏互换）
 
   /// 同时下载量：默认 2，范围 1~5
   static const int minConcurrentChapters = 1;
@@ -77,7 +95,7 @@ class SettingsService extends ChangeNotifier {
   static const double minBookHorizontalPadding = 15;
   static const double maxBookHorizontalPadding = 30;
   static const double defaultBookVerticalPadding = 36; // 图书上下边距
-  static const double minBookVerticalPadding = 30;
+  static const double minBookVerticalPadding = 15;
   static const double maxBookVerticalPadding = 55;
 
   int _maxConcurrentChapters = defaultConcurrentChapters;
@@ -91,11 +109,14 @@ class SettingsService extends ChangeNotifier {
   bool _useBuiltinAccount = true; // 图书下载未登录时是否回退内置账号（搜索一律回退内置账号）
   bool _checkUpdateOnStartup = true; // 启动时自动检查 app 新版本
   bool _isDarkMode = false; // 暗色模式（首次跟随系统，之后保留用户选择）
+  bool _themeFollowSystem = true; // 主题跟随系统明暗；关闭后用上面的手动选择
   int _preloadImageCount = defaultPreloadImages; // 在线阅读预加载图片数
   double _bookFontSize = defaultBookFontSize; // 图书字号
   double _bookLineHeight = defaultBookLineHeight; // 图书行距
   double _bookHorizontalPadding = defaultBookHorizontalPadding; // 图书左右边距
   double _bookVerticalPadding = defaultBookVerticalPadding; // 图书上下边距
+  List<NavTab> _visibleNavTabs = NavTab.values.toList(); // 导航栏可见 tab，默认全显示
+  bool _navFloating = true; // 导航栏是否悬浮（胶囊型毛玻璃样式），默认开启
 
   int get maxConcurrentChapters => _maxConcurrentChapters;
   int get maxConcurrentImages => _maxConcurrentImages;
@@ -107,12 +128,17 @@ class SettingsService extends ChangeNotifier {
   DefaultHomePage get defaultHomePage => _defaultHomePage;
   bool get useBuiltinAccount => _useBuiltinAccount;
   bool get checkUpdateOnStartup => _checkUpdateOnStartup;
-  bool get isDarkMode => _isDarkMode;
+  bool get isDarkMode => _themeFollowSystem
+      ? (PlatformDispatcher.instance.platformBrightness == Brightness.dark)
+      : _isDarkMode;
+  bool get themeFollowSystem => _themeFollowSystem;
   int get preloadImageCount => _preloadImageCount;
   double get bookFontSize => _bookFontSize;
   double get bookLineHeight => _bookLineHeight;
   double get bookHorizontalPadding => _bookHorizontalPadding;
   double get bookVerticalPadding => _bookVerticalPadding;
+  List<NavTab> get visibleNavTabs => List.unmodifiable(_visibleNavTabs);
+  bool get navFloating => _navFloating;
 
   /// 图书正文字体由阅读模式派生：仿真翻页用水墨楷体，普通翻页用系统默认。
   /// 切换模式时自动联动，无需独立持久化。
@@ -148,17 +174,41 @@ class SettingsService extends ChangeNotifier {
       _downloadSavePath = prefs.getString(_savePathKey);
       _mergeChapterToEpub = prefs.getBool(_mergeEpubKey) ?? true;
       _keepImagesAfterEpub = prefs.getBool(_keepImagesKey) ?? true;
-      final homeIdx = prefs.getInt(_defaultHomeKey) ?? 0;
-      _defaultHomePage =
-          (homeIdx >= 0 && homeIdx < DefaultHomePage.values.length)
-          ? DefaultHomePage.values[homeIdx]
-          : DefaultHomePage.manga;
+      // 默认首页：v1 枚举顺序为 漫画/图书/收藏/书架/我的，v2 将书架与收藏互换。
+      // v1 按下标持久化，换序后需按下标还原旧 tab 再映射到新枚举，避免老用户默认首页错位。
+      final navOrderVersion = prefs.getInt(_kNavOrderVersionKey) ?? 1;
+      final homeIdx = prefs.getInt(_defaultHomeKey);
+      if (navOrderVersion < 2) {
+        const v1Order = <NavTab>[
+          NavTab.manga,
+          NavTab.book,
+          NavTab.favorites,
+          NavTab.bookshelf,
+          NavTab.me,
+        ];
+        final migrated =
+            (homeIdx != null && homeIdx >= 0 && homeIdx < v1Order.length)
+            ? v1Order[homeIdx].toDefaultHomePage()
+            : DefaultHomePage.manga;
+        _defaultHomePage = migrated;
+        await prefs.setInt(_defaultHomeKey, migrated.index);
+        await prefs.setInt(_kNavOrderVersionKey, 2);
+      } else {
+        _defaultHomePage =
+            (homeIdx != null &&
+                homeIdx >= 0 &&
+                homeIdx < DefaultHomePage.values.length)
+            ? DefaultHomePage.values[homeIdx]
+            : DefaultHomePage.manga;
+      }
       _useBuiltinAccount = prefs.getBool(_kBuiltinAccountKey) ?? true;
       _checkUpdateOnStartup = prefs.getBool(_kCheckUpdateKey) ?? true;
       // 暗色模式：有记录用记录，否则首次跟随系统
       _isDarkMode =
           prefs.getBool(_kDarkModeKey) ??
           (PlatformDispatcher.instance.platformBrightness == Brightness.dark);
+      // 主题跟随系统：默认开启；开启时 isDarkMode 取系统明暗，并实时响应系统切换
+      _themeFollowSystem = prefs.getBool(_kThemeFollowSystemKey) ?? true;
       _preloadImageCount = _clamp(
         prefs.getInt(_preloadKey) ?? defaultPreloadImages,
         minPreloadImages,
@@ -185,16 +235,36 @@ class SettingsService extends ChangeNotifier {
         minBookVerticalPadding,
         maxBookVerticalPadding,
       );
+      // 导航栏悬浮开关
+      _navFloating = prefs.getBool(_kNavFloatingKey) ?? true;
+      // 导航栏可见 tab
+      final visibleTabNames = prefs.getStringList(_kNavVisibleTabsKey);
+      if (visibleTabNames != null && visibleTabNames.isNotEmpty) {
+        final parsed = <NavTab>[];
+        for (final name in visibleTabNames) {
+          final tab = NavTab.values.where((t) => t.name == name).firstOrNull;
+          if (tab != null) parsed.add(tab);
+        }
+        _visibleNavTabs = _sanitizeVisibleNavTabs(parsed);
+      }
+      // 若默认首页不在可见列表中，自动修正到第一个可见
+      if (!_visibleNavTabs.any((t) => t == _defaultHomePage.toNavTab())) {
+        _defaultHomePage = _visibleNavTabs.first.toDefaultHomePage();
+      }
       _log(
         '设置加载: 同时下载量=$_maxConcurrentChapters, 分片并发=$_maxConcurrentImages, '
         '漫画阅读模式=$_readingMode, 图书阅读模式=$_bookReadingMode, 保存路径=${_downloadSavePath ?? "默认"}, '
         '合并EPUB=$_mergeChapterToEpub, 保留图片=$_keepImagesAfterEpub, '
-        '默认首页=$_defaultHomePage, 内置账号=$_useBuiltinAccount, 启动检查更新=$_checkUpdateOnStartup, 暗色模式=$_isDarkMode, 预加载=$_preloadImageCount, '
+        '默认首页=$_defaultHomePage, 内置账号=$_useBuiltinAccount, 启动检查更新=$_checkUpdateOnStartup, 暗色模式=$_isDarkMode, 跟随系统=$_themeFollowSystem, 预加载=$_preloadImageCount, '
         '图书排版: 字号=$_bookFontSize 行距=$_bookLineHeight 左右边距=$_bookHorizontalPadding 上下边距=$_bookVerticalPadding',
       );
     } catch (e) {
       _log('加载设置失败: $e');
     }
+    // 系统明暗变化时，若处于"跟随系统"则通知 UI 实时刷新（触发既有主题切换动画）
+    PlatformDispatcher.instance.onPlatformBrightnessChanged = () {
+      if (_themeFollowSystem) notifyListeners();
+    };
     notifyListeners();
   }
 
@@ -356,6 +426,27 @@ class SettingsService extends ChangeNotifier {
     }
   }
 
+  /// 设置：主题是否跟随系统明暗
+  /// 关闭时把当前生效的暗色状态固化为手动选择，避免切到手动瞬间跳变。
+  Future<void> setThemeFollowSystem(bool value) async {
+    if (_themeFollowSystem == value) return;
+    if (!value) {
+      // 退出跟随系统前，用当前生效（可能来自系统）的状态初始化手动值
+      _isDarkMode = isDarkMode;
+    }
+    _themeFollowSystem = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kThemeFollowSystemKey, value);
+      if (!value) {
+        await prefs.setBool(_kDarkModeKey, _isDarkMode);
+      }
+    } catch (e) {
+      _log('保存主题跟随系统失败: $e');
+    }
+  }
+
   /// 设置：在线阅读预加载图片数（自动 clamp 到 2~10）
   Future<void> setPreloadImageCount(int value) async {
     final clamped = _clamp(value, minPreloadImages, maxPreloadImages);
@@ -432,6 +523,78 @@ class SettingsService extends ChangeNotifier {
     } catch (e) {
       _log('保存图书上下边距失败: $e');
     }
+  }
+
+  /// 设置导航栏可见 tab
+  /// - "我的"始终显示
+  /// - 漫画/图书/收藏/书架至少保留一个
+  /// - 如果当前默认首页被隐藏，自动修正到第一个可见 tab
+  Future<void> setVisibleNavTabs(List<NavTab> tabs) async {
+    final sanitized = _sanitizeVisibleNavTabs(tabs);
+    if (_listEquals(_visibleNavTabs, sanitized)) return;
+    _visibleNavTabs = sanitized;
+
+    // 若默认首页不在可见列表中，自动修正
+    if (!_visibleNavTabs.any((t) => t == _defaultHomePage.toNavTab())) {
+      _defaultHomePage = _visibleNavTabs.first.toDefaultHomePage();
+    }
+
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(
+        _kNavVisibleTabsKey,
+        sanitized.map((t) => t.name).toList(),
+      );
+      // 同步保存可能被修正的默认首页
+      await prefs.setInt(_defaultHomeKey, _defaultHomePage.index);
+    } catch (e) {
+      _log('保存导航栏可见 tab 失败: $e');
+    }
+  }
+
+  /// 校验可见 tab 列表：
+  /// - 必须包含 me
+  /// - 漫画/图书/收藏/书架至少一个
+  /// - 保持原始顺序（按 NavTab.values 顺序排序）
+  static List<NavTab> _sanitizeVisibleNavTabs(List<NavTab> tabs) {
+    final set = tabs.toSet();
+    // 必须有"我的"
+    set.add(NavTab.me);
+    // 漫画/图书/收藏/书架至少一个
+    const contentTabs = [
+      NavTab.manga,
+      NavTab.book,
+      NavTab.bookshelf,
+      NavTab.favorites,
+    ];
+    final hasContent = contentTabs.any((t) => set.contains(t));
+    if (!hasContent) {
+      set.add(NavTab.manga); // 默认保留漫画
+    }
+    // 按固定顺序返回
+    return NavTab.values.where((t) => set.contains(t)).toList();
+  }
+
+  /// 设置导航栏是否悬浮（胶囊型毛玻璃样式）
+  Future<void> setNavFloating(bool value) async {
+    if (_navFloating == value) return;
+    _navFloating = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kNavFloatingKey, value);
+    } catch (e) {
+      _log('保存导航栏悬浮开关失败: $e');
+    }
+  }
+
+  static bool _listEquals<T>(List<T> a, List<T> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   static int _clamp(int v, int min, int max) =>

@@ -4,7 +4,8 @@ import '../services/remote_config_service.dart';
 import '../theme/jelly_theme.dart';
 
 /// 公告弹窗：首页居中弹出远程公告（同步 Windows 端）。
-/// - 显示条件：notification 非空且未被用户关闭。
+/// - 显示条件：notification 非空、未被用户关闭、且当前无新版本提示。
+/// - 互斥逻辑：有新版本时不弹公告（同步 Windows 端 StartupCheckThread）。
 /// - 关闭后相同公告不再弹出；远程刷新出新文本（文本变化）时自动再弹。
 /// - 不占布局：build 返回 SizedBox.shrink()，仅在条件满足时弹 Dialog。
 class NotificationPopup extends StatefulWidget {
@@ -46,9 +47,11 @@ class _NotificationPopupState extends State<NotificationPopup> {
 
   void _onConfigChanged() => _maybeShow();
 
-  /// 满足条件则弹窗：已加载 dismiss 状态、未在弹、公告非空且未关闭。
+  /// 满足条件则弹窗：已加载 dismiss 状态、未在弹、公告非空且未关闭、且无新版本。
   void _maybeShow() {
     if (!_loaded || _showing) return;
+    // 互斥：有新版本时不弹公告（同步 Windows 端）
+    if (RemoteConfigService().hasNewVersion) return;
     final text = RemoteConfigService().notification;
     if (text.isEmpty || text == _dismissed) return;
     setState(() => _showing = true); // 立即占位，防止重复触发

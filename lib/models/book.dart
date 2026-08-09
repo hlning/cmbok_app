@@ -70,21 +70,21 @@ class Book {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'hash': hash,
-        'title': title,
-        'author': author,
-        'cover': cover,
-        'year': year,
-        'language': language,
-        'extension': extension,
-        'filesizeString': filesizeString,
-        'description': description,
-        'pages': pages,
-        'publisher': publisher,
-        'interestScore': interestScore,
-        'identifier': identifier,
-      };
+    'id': id,
+    'hash': hash,
+    'title': title,
+    'author': author,
+    'cover': cover,
+    'year': year,
+    'language': language,
+    'extension': extension,
+    'filesizeString': filesizeString,
+    'description': description,
+    'pages': pages,
+    'publisher': publisher,
+    'interestScore': interestScore,
+    'identifier': identifier,
+  };
 
   Book copyWith({
     String? id,

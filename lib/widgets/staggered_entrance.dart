@@ -34,7 +34,7 @@ class _StaggeredEntranceState extends State<StaggeredEntrance>
       end: Offset.zero,
     ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
     // 按 index 错开延迟，形成瀑布效果
-    final delay = (widget.index % 10) * 45;
+    final delay = (widget.index % 20) * 45;
     Future.delayed(Duration(milliseconds: delay), () {
       if (mounted) _controller.forward();
     });

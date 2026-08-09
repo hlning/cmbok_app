@@ -11,12 +11,19 @@ import '../services/theme_switch.dart';
 import '../services/update_service.dart';
 import '../theme/jelly_theme.dart';
 import '../utils/constants.dart';
+import '../widgets/bookshelf_icon.dart';
+import '../widgets/jelly_nav_bar.dart';
 import '../widgets/staggered_entrance.dart';
 import '../widgets/update_dialog.dart';
 import 'about_page.dart';
+import 'book_search_page.dart';
+import 'bookshelf_page.dart';
 import 'display_settings_page.dart';
+import 'download_page.dart';
 import 'download_settings_page.dart';
+import 'favorites_page.dart';
 import 'reading_settings_page.dart';
+import 'search_page.dart';
 
 /// "我的"页：菜单（下载设置等）+ 右上角暗色模式切换 + 版本信息
 class MePage extends StatefulWidget {
@@ -47,22 +54,43 @@ class _MePageState extends State<MePage> {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final titleColor = isDark ? Colors.white : JellyTheme.textPrimaryLight;
+    // 导航栏被隐藏的 tab（在"下载记录"下方依次补入口）
+    final hiddenTabs = NavTab.values
+        .where(
+          (t) =>
+              t != NavTab.me && !SettingsService().visibleNavTabs.contains(t),
+        )
+        .toList();
+    final hc = hiddenTabs.length;
     return Scaffold(
       body: SafeArea(
+        bottom: false,
         child: ListView(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: EdgeInsets.only(
+            left: 12,
+            right: 12,
+            top: 0,
+            bottom:
+                8 +
+                (SettingsService().navFloating
+                    ? JellyNavBar.floatingTotalHeight + 8
+                    : 0.0),
+          ),
           children: [
             // 标题 + 右上角暗色模式切换
             Padding(
               padding: const EdgeInsets.only(top: 6, bottom: 12),
               child: Row(
                 children: [
-                  Text(
-                    '我的',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: titleColor,
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Text(
+                      '我的',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: titleColor,
+                      ),
                     ),
                   ),
                   const Spacer(),
@@ -120,27 +148,26 @@ class _MePageState extends State<MePage> {
                       ),
                     ),
                     StaggeredEntrance(
-                      key: ValueKey('${_session}_2'),
+                      key: ValueKey('${_session}_theme_follow'),
                       index: 2,
                       child: SizedBox(
                         width: itemWidth,
-                        child: _buildMenuItem(
-                          isDark,
-                          icon: Icons.download_for_offline_rounded,
-                          iconBg: JellyTheme.primary,
-                          title: '下载设置',
-                          subtitle: '同时下载量、分片并发量',
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const DownloadSettingsPage(),
-                            ),
+                        child: ListenableBuilder(
+                          listenable: SettingsService(),
+                          builder: (context, _) => _buildSwitchTile(
+                            isDark,
+                            icon: Icons.brightness_auto_rounded,
+                            iconBg: JellyTheme.primary,
+                            title: '主题跟随系统',
+                            subtitle: '随系统明暗自动切换',
+                            value: SettingsService().themeFollowSystem,
+                            onChanged: SettingsService().setThemeFollowSystem,
                           ),
                         ),
                       ),
                     ),
                     StaggeredEntrance(
-                      key: ValueKey('${_session}_3'),
+                      key: ValueKey('${_session}_4'),
                       index: 3,
                       child: SizedBox(
                         width: itemWidth,
@@ -160,7 +187,7 @@ class _MePageState extends State<MePage> {
                       ),
                     ),
                     StaggeredEntrance(
-                      key: ValueKey('${_session}_4'),
+                      key: ValueKey('${_session}_5'),
                       index: 4,
                       child: SizedBox(
                         width: itemWidth,
@@ -180,8 +207,63 @@ class _MePageState extends State<MePage> {
                       ),
                     ),
                     StaggeredEntrance(
-                      key: ValueKey('${_session}_5'),
+                      key: ValueKey('${_session}_2'),
                       index: 5,
+                      child: SizedBox(
+                        width: itemWidth,
+                        child: _buildMenuItem(
+                          isDark,
+                          icon: Icons.download_for_offline_rounded,
+                          iconBg: JellyTheme.primary,
+                          title: '下载设置',
+                          subtitle: '同时下载量、分片并发量',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const DownloadSettingsPage(),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    StaggeredEntrance(
+                      key: ValueKey('${_session}_download_record'),
+                      index: 6,
+                      child: SizedBox(
+                        width: itemWidth,
+                        child: _buildMenuItem(
+                          isDark,
+                          icon: Icons.download_done_rounded,
+                          iconBg: JellyTheme.primary,
+                          title: '下载记录',
+                          subtitle: '漫画 & 图书下载管理',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const DownloadPage(
+                                isActive: true,
+                                showBackButton: true,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    // 被隐藏导航 tab 入口（导航栏关闭某 tab 时，依次补在"下载记录"下方）
+                    for (var i = 0; i < hiddenTabs.length; i++)
+                      StaggeredEntrance(
+                        key: ValueKey(
+                          '${_session}_hidden_${hiddenTabs[i].name}',
+                        ),
+                        index: 7 + i,
+                        child: SizedBox(
+                          width: itemWidth,
+                          child: _buildHiddenTabItem(isDark, hiddenTabs[i]),
+                        ),
+                      ),
+                    StaggeredEntrance(
+                      key: ValueKey('${_session}_6'),
+                      index: 7 + hc,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -195,8 +277,8 @@ class _MePageState extends State<MePage> {
                       ),
                     ),
                     StaggeredEntrance(
-                      key: ValueKey('${_session}_6'),
-                      index: 6,
+                      key: ValueKey('${_session}_7'),
+                      index: 8 + hc,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -224,36 +306,62 @@ class _MePageState extends State<MePage> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  _buildQuickAction(
-                    isDark
-                        ? 'assets/icons/github_dark.png'
-                        : 'assets/icons/github.png',
-                    Icons.code_rounded,
-                    'GitHub',
-                    () => _launchUrl(AppConstants.githubUrl),
+                  StaggeredEntrance(
+                    key: ValueKey('${_session}_8'),
+                    index: 9 + hc,
+                    child: _buildQuickAction(
+                      isDark
+                          ? 'assets/icons/github_dark.png'
+                          : 'assets/icons/github.png',
+                      Icons.code_rounded,
+                      'GitHub',
+                      () => _launchUrl(AppConstants.githubUrl),
+                    ),
                   ),
-                  _buildQuickAction(
-                    'assets/icons/qq.png',
-                    Icons.group_rounded,
-                    'QQ群',
-                    _openQqGroup,
+                  StaggeredEntrance(
+                    key: ValueKey('${_session}_9'),
+                    index: 10 + hc,
+                    child: _buildQuickAction(
+                      'assets/icons/qq.png',
+                      Icons.group_rounded,
+                      'QQ群',
+                      _openQqGroup,
+                    ),
                   ),
-                  _buildQuickAction(
-                    'assets/icons/share.png',
-                    Icons.share_rounded,
-                    '分享软件',
-                    _shareApp,
+                  StaggeredEntrance(
+                    key: ValueKey('${_session}_10'),
+                    index: 11 + hc,
+                    child: _buildQuickAction(
+                      'assets/icons/tt-station.png',
+                      Icons.language_rounded,
+                      '甜甜的小站',
+                      () => _launchUrl(AppConstants.blogUrl),
+                    ),
+                  ),
+                  StaggeredEntrance(
+                    key: ValueKey('${_session}_11'),
+                    index: 12 + hc,
+                    child: _buildQuickAction(
+                      'assets/icons/share.png',
+                      Icons.share_rounded,
+                      '分享软件',
+                      _shareApp,
+                    ),
                   ),
                 ],
               ),
             ),
             const SizedBox(height: 12),
-            Center(
-              child: Text(
-                '当前版本：${AppConstants.appName} V${AppConstants.version}',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: JellyTheme.textSecondary,
+            StaggeredEntrance(
+              key: ValueKey('${_session}_12'),
+              index: 13 + hc,
+              child: Center(
+                child: Text(
+                  '当前版本：${AppConstants.appName} V${AppConstants.version}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: JellyTheme.textSecondary,
+                  ),
                 ),
               ),
             ),
@@ -287,7 +395,14 @@ class _MePageState extends State<MePage> {
                   ro.size.center(Offset.zero),
                 );
               }
-              SettingsService().setDarkMode(!dark);
+              final s = SettingsService();
+              if (s.themeFollowSystem) {
+                // 跟随系统时手动切换：退出跟随，并切到与当前生效相反的明暗
+                s.setThemeFollowSystem(false);
+                s.setDarkMode(!s.isDarkMode);
+              } else {
+                s.setDarkMode(!s.isDarkMode);
+              }
             },
             child: SizedBox(
               width: 38,
@@ -463,12 +578,14 @@ class _MePageState extends State<MePage> {
 
   Widget _buildMenuItem(
     bool isDark, {
-    required IconData icon,
+    IconData? icon,
+    JellyIconBuilder? iconBuilder,
     required Color iconBg,
     required String title,
     required String subtitle,
     required VoidCallback onTap,
   }) {
+    assert(icon != null || iconBuilder != null);
     return Material(
       color: isDark ? JellyTheme.cardDark : JellyTheme.cardLight,
       borderRadius: BorderRadius.circular(16),
@@ -486,7 +603,9 @@ class _MePageState extends State<MePage> {
                   color: iconBg.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(icon, color: iconBg, size: 20),
+                child: iconBuilder != null
+                    ? iconBuilder(iconBg, 20)
+                    : Icon(icon, color: iconBg, size: 20),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -523,6 +642,74 @@ class _MePageState extends State<MePage> {
         ),
       ),
     );
+  }
+
+  /// 被隐藏导航 tab 的入口（导航栏关闭该 tab 时，在"我的"补入口）
+  Widget _buildHiddenTabItem(bool isDark, NavTab tab) {
+    switch (tab) {
+      case NavTab.manga:
+        return _buildMenuItem(
+          isDark,
+          icon: Icons.palette_rounded,
+          iconBg: JellyTheme.primary,
+          title: '漫画',
+          subtitle: '漫画搜索与阅读',
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) =>
+                  const SearchPage(isActive: true, showBackButton: true),
+            ),
+          ),
+        );
+      case NavTab.book:
+        return _buildMenuItem(
+          isDark,
+          icon: Icons.book_rounded,
+          iconBg: JellyTheme.primary,
+          title: '图书',
+          subtitle: '图书搜索与阅读',
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) =>
+                  const BookSearchPage(isActive: true, showBackButton: true),
+            ),
+          ),
+        );
+      case NavTab.favorites:
+        return _buildMenuItem(
+          isDark,
+          icon: Icons.favorite_rounded,
+          iconBg: JellyTheme.primary,
+          title: '收藏',
+          subtitle: '漫画 & 图书收藏',
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) =>
+                  const FavoritesPage(isActive: true, showBackButton: true),
+            ),
+          ),
+        );
+      case NavTab.bookshelf:
+        return _buildMenuItem(
+          isDark,
+          iconBuilder: (color, size) => BookshelfIcon(color: color, size: size),
+          iconBg: JellyTheme.primary,
+          title: '书架',
+          subtitle: '本地书架管理',
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) =>
+                  const BookshelfPage(isActive: true, showBackButton: true),
+            ),
+          ),
+        );
+      case NavTab.me:
+        return const SizedBox.shrink(); // 不会出现（me 始终可见）
+    }
   }
 
   /// 开关设置行（左图标 + 标题/副标题 + 右侧 Switch），一层设置不跳子页面

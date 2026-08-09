@@ -9,6 +9,10 @@ import 'jelly_score_badge.dart';
 class JellyComicListTile extends StatefulWidget {
   final Comic comic;
   final VoidCallback onTap;
+
+  /// 长按回调（用于父级进入多选模式；为空则不启用长按）
+  final VoidCallback? onLongPress;
+
   /// 封面 Hero 动画 tag（与详情页一致；为空则不启用共享元素过渡）
   final String? heroTag;
 
@@ -16,6 +20,7 @@ class JellyComicListTile extends StatefulWidget {
     super.key,
     required this.comic,
     required this.onTap,
+    this.onLongPress,
     this.heroTag,
   });
 
@@ -79,6 +84,13 @@ class _JellyComicListTileState extends State<JellyComicListTile>
       onTapDown: _onTapDown,
       onTapUp: _onTapUp,
       onTapCancel: _onTapCancel,
+      onLongPress: widget.onLongPress == null
+          ? null
+          : () {
+              setState(() => _isPressed = false);
+              _controller.reverse();
+              widget.onLongPress!();
+            },
       child: AnimatedBuilder(
         animation: _scaleAnimation,
         builder: (context, child) {
@@ -208,27 +220,17 @@ class _JellyComicListTileState extends State<JellyComicListTile>
                           JellyFavoriteButton(comic: comic, size: 20),
                         ],
                       ),
-                      // 别名
-                      if (comic.alias != null && comic.alias!.isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          '别名：${comic.alias}',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: isDark
-                                ? Colors.white54
-                                : JellyTheme.textSecondary,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                      // 简介
-                      if (comic.description != null &&
-                          comic.description!.trim().isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          comic.description!.trim(),
+                      const SizedBox(height: 6),
+                      // 描述区：固定 2 行高度，优先显示简介，无简介时显示别名
+                      SizedBox(
+                        height: 11 * 1.4 * 2, // fontSize:11, height:1.4, 2行
+                        child: Text(
+                          (comic.description != null &&
+                                  comic.description!.trim().isNotEmpty)
+                              ? comic.description!.trim()
+                              : (comic.alias != null && comic.alias!.isNotEmpty)
+                              ? '别名：${comic.alias}'
+                              : '',
                           style: TextStyle(
                             fontSize: 11,
                             height: 1.4,
@@ -239,33 +241,14 @@ class _JellyComicListTileState extends State<JellyComicListTile>
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
-                      ],
-                      // 标签
-                      if (comic.tags != null && comic.tags!.isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 4,
-                          children: comic.tags!
-                              .take(3)
-                              .map((t) => _TagChip(text: t, isDark: isDark))
-                              .toList(),
-                        ),
-                      ],
-                      // 底部信息行：状态 / 章节数 / 更新时间
+                      ),
+                      // 底部信息行：章节数 / 更新时间
                       if (_hasMeta(comic))
                         Wrap(
                           spacing: 10,
                           runSpacing: 4,
                           crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
-                            if (comic.status != null &&
-                                comic.status!.isNotEmpty)
-                              _MetaItem(
-                                icon: Icons.bolt_rounded,
-                                text: comic.status!,
-                                isDark: isDark,
-                              ),
                             if (comic.totalChapters != null &&
                                 comic.totalChapters! > 0)
                               _MetaItem(
@@ -293,10 +276,9 @@ class _JellyComicListTileState extends State<JellyComicListTile>
   }
 
   bool _hasMeta(Comic comic) {
-    final hasStatus = comic.status != null && comic.status!.isNotEmpty;
     final hasChapters = comic.totalChapters != null && comic.totalChapters! > 0;
     final hasUpdate = comic.updateTime != null;
-    return hasStatus || hasChapters || hasUpdate;
+    return hasChapters || hasUpdate;
   }
 
   String _formatDate(DateTime d) {
@@ -332,34 +314,6 @@ class _MetaItem extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
         ),
       ],
-    );
-  }
-}
-
-/// 标签胶囊
-class _TagChip extends StatelessWidget {
-  final String text;
-  final bool isDark;
-
-  const _TagChip({required this.text, required this.isDark});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(
-        color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontSize: 10,
-          color: isDark ? Colors.white70 : JellyTheme.textSecondary,
-        ),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
     );
   }
 }

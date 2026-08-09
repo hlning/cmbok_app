@@ -42,7 +42,9 @@ class ComicCrypto {
       _log('开始解密...');
       final decrypted = encrypter.decrypt(Encrypted(cipherBytes), iv: iv);
       _log('解密成功，结果长度: ${decrypted.length}');
-      _log('解密内容前100字符: ${decrypted.substring(0, decrypted.length > 100 ? 100 : decrypted.length)}');
+      _log(
+        '解密内容前100字符: ${decrypted.substring(0, decrypted.length > 100 ? 100 : decrypted.length)}',
+      );
 
       try {
         final jsonResult = jsonDecode(decrypted);

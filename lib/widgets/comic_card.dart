@@ -15,11 +15,7 @@ class ComicCard extends StatelessWidget {
   final Comic comic;
   final VoidCallback onTap;
 
-  const ComicCard({
-    super.key,
-    required this.comic,
-    required this.onTap,
-  });
+  const ComicCard({super.key, required this.comic, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -75,10 +71,7 @@ class ComicCard extends StatelessWidget {
                   if (comic.author != null && comic.author!.isNotEmpty)
                     Text(
                       comic.author!,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.grey[600],
-                      ),
+                      style: TextStyle(fontSize: 11, color: Colors.grey[600]),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),

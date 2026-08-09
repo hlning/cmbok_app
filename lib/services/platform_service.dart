@@ -1,6 +1,6 @@
 import 'package:flutter/services.dart';
 
-/// 平台原生能力（方法通道）：打开目录、取 APK 路径
+/// 平台原生能力（方法通道）：打开目录、取 APK 路径、PDF 光栅化
 class PlatformService {
   static const _channel = MethodChannel('cmbok/platform');
 
@@ -20,8 +20,10 @@ class PlatformService {
   /// 无可用应用或非安卓返回 false。
   static Future<bool> openFile(String path, String mimeType) async {
     try {
-      final r = await _channel.invokeMethod<bool>(
-          'openFile', {'path': path, 'mimeType': mimeType});
+      final r = await _channel.invokeMethod<bool>('openFile', {
+        'path': path,
+        'mimeType': mimeType,
+      });
       return r ?? false;
     } on PlatformException {
       return false;
@@ -34,6 +36,53 @@ class PlatformService {
   static Future<String?> getApkPath() async {
     try {
       return await _channel.invokeMethod<String>('getApkPath');
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
+  /// 打开 PDF 取页数与每页像素尺寸（仅度量不渲染，供分页器度量用）。
+  /// 非安卓/失败返回 null。
+  static Future<({int pageCount, List<({int w, int h})> sizes})?> pdfOpen(
+    String path,
+  ) async {
+    try {
+      final r = await _channel.invokeMethod<Map>('pdfOpen', {'path': path});
+      if (r == null) return null;
+      final pageCount = r['pageCount'] as int;
+      final sizesRaw = r['sizes'] as List;
+      final sizes = <({int w, int h})>[];
+      for (final s in sizesRaw) {
+        final m = s as Map;
+        sizes.add((w: m['w'] as int, h: m['h'] as int));
+      }
+      return (pageCount: pageCount, sizes: sizes);
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
+  /// 光栅化 PDF 单页为 JPEG 字节（按 targetWidth 缩放）。
+  /// 非安卓/失败返回 null。
+  static Future<Uint8List?> pdfRenderPage(
+    String path,
+    int index,
+    int targetWidth,
+  ) async {
+    try {
+      final r = await _channel.invokeMethod<dynamic>('pdfRenderPage', {
+        'path': path,
+        'index': index,
+        'targetWidth': targetWidth,
+      });
+      if (r == null) return null;
+      if (r is Uint8List) return r;
+      if (r is List) return Uint8List.fromList(r.cast<int>());
+      return null;
     } on PlatformException {
       return null;
     } on MissingPluginException {

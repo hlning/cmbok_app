@@ -1,10 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/book.dart';
+import '../models/bookshelf.dart';
 import '../utils/constants.dart';
+import '../utils/cover_generator.dart';
+import 'book_parser.dart';
+import 'bookshelf_service.dart';
 import 'settings_service.dart';
 import 'zlibrary_service.dart';
 
@@ -15,7 +20,12 @@ void _log(String message) {
 enum BookDownloadStatus { queued, downloading, completed, failed, paused }
 
 /// 同步返回的下载发起结果（UI 据此弹 toast）；后续状态由任务反映在下载管理页
-enum BookDownloadResult { started, alreadyDownloading, limitExceeded, needLogin }
+enum BookDownloadResult {
+  started,
+  alreadyDownloading,
+  limitExceeded,
+  needLogin,
+}
 
 class BookDownloadTask {
   final String bookId;
@@ -34,6 +44,7 @@ class BookDownloadTask {
   int startIndex; // 内置账号轮询起点（reserve 时确定）
   bool reserved; // 是否已占用每日限额名额
   bool resumeMode; // 续传标记（运行时）：true 时从已下载字节接着下
+  bool isLocalImport; // 本地导入的图书（非 z-library 下载，不占名额、不自动入"已下载的书"）
 
   BookDownloadTask({
     required this.bookId,
@@ -50,23 +61,23 @@ class BookDownloadTask {
     this.startIndex = 0,
     this.reserved = false,
     this.resumeMode = false,
+    this.isLocalImport = false,
   });
 
   factory BookDownloadTask.fromBook(
     Book book, {
     int startIndex = 0,
     bool reserved = false,
-  }) =>
-      BookDownloadTask(
-        bookId: book.id,
-        hash: book.hash,
-        title: book.title,
-        author: book.author,
-        extension: book.extension,
-        cover: book.cover,
-        startIndex: startIndex,
-        reserved: reserved,
-      );
+  }) => BookDownloadTask(
+    bookId: book.id,
+    hash: book.hash,
+    title: book.title,
+    author: book.author,
+    extension: book.extension,
+    cover: book.cover,
+    startIndex: startIndex,
+    reserved: reserved,
+  );
 
   factory BookDownloadTask.fromJson(Map<String, dynamic> j) {
     final status = BookDownloadStatus.values.firstWhere(
@@ -83,22 +94,26 @@ class BookDownloadTask {
       status: status,
       localPath: j['localPath'] as String?,
       downloadedAt: j['downloadedAt'] as int?,
+      startIndex: j['startIndex'] as int? ?? 0,
       // 失败任务的名额已在失败时释放；completed/paused 仍占用名额
       reserved: status != BookDownloadStatus.failed,
+      isLocalImport: j['isLocalImport'] as bool? ?? false,
     );
   }
 
   Map<String, dynamic> toJson() => {
-        'bookId': bookId,
-        'hash': hash,
-        'title': title,
-        'author': author,
-        'extension': extension,
-        'cover': cover,
-        'status': status.name,
-        'localPath': localPath,
-        'downloadedAt': downloadedAt,
-      };
+    'bookId': bookId,
+    'hash': hash,
+    'title': title,
+    'author': author,
+    'extension': extension,
+    'cover': cover,
+    'status': status.name,
+    'localPath': localPath,
+    'downloadedAt': downloadedAt,
+    'startIndex': startIndex,
+    'isLocalImport': isLocalImport,
+  };
 }
 
 /// 图书下载服务（单例 + ChangeNotifier）
@@ -111,10 +126,12 @@ class BookDownloadService extends ChangeNotifier {
 
   static const _kRecords = 'book_download_records';
 
-  final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 20),
-    receiveTimeout: const Duration(seconds: 120),
-  ));
+  final Dio _dio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 20),
+      receiveTimeout: const Duration(seconds: 120),
+    ),
+  );
 
   final Map<String, BookDownloadTask> _tasks = {};
   Map<String, BookDownloadTask> get tasks => Map.unmodifiable(_tasks);
@@ -123,13 +140,29 @@ class BookDownloadService extends ChangeNotifier {
   bool isDownloaded(String bookId) =>
       _tasks[bookId]?.status == BookDownloadStatus.completed;
 
-  List<BookDownloadTask> get activeTasks =>
-      _tasks.values.where((t) => t.status != BookDownloadStatus.completed).toList();
-  List<BookDownloadTask> get completedTasks =>
-      _tasks.values.where((t) => t.status == BookDownloadStatus.completed).toList();
+  List<BookDownloadTask> get activeTasks => _tasks.values
+      .where((t) => t.status != BookDownloadStatus.completed)
+      .toList();
+  List<BookDownloadTask> get completedTasks => _tasks.values
+      .where((t) => t.status == BookDownloadStatus.completed)
+      .toList();
 
-  int get _runningCount =>
-      _tasks.values.where((t) => t.status == BookDownloadStatus.downloading).length;
+  int get _runningCount => _tasks.values
+      .where((t) => t.status == BookDownloadStatus.downloading)
+      .length;
+
+  /// 进度通知节流：多本并发下载时进度回调仍可能每秒数次 notify，
+  /// 叠加 setState 全量重建淹没主线程消息队列。仅进度更新走节流，
+  /// 状态变更（开始/完成/失败/暂停/取消）仍即时 notify。
+  DateTime? _lastProgressNotify;
+  Timer? _progressNotifyTimer;
+
+  /// 本地导入自增序号：bookId 追加它，防多本连续导入同毫秒撞 id。
+  int _localSeq = 0;
+
+  /// 落盘节流：大批量下载时书籍频繁完成，避免每本都编码全任务写 prefs。
+  DateTime? _lastPersist;
+  Timer? _persistTrailingTimer;
 
   Future<void> init() async {
     try {
@@ -146,23 +179,110 @@ class BookDownloadService extends ChangeNotifier {
     } catch (e) {
       _log('加载记录失败: $e');
     }
+    // 应用退出时正在下载(downloading)的任务已被中断，转回排队重新调度。
+    // 图书为单一大文件，沿用"暂停->继续"的 HTTP Range 续传（resumeMode=true）
+    // 从已下载字节接着下；queued 任务从未开始，保持从头下。
+    var hasQueued = false;
+    for (final t in _tasks.values) {
+      if (t.status == BookDownloadStatus.downloading) {
+        t
+          ..status = BookDownloadStatus.queued
+          ..resumeMode = true;
+        hasQueued = true;
+      } else if (t.status == BookDownloadStatus.queued) {
+        hasQueued = true;
+      }
+    }
     notifyListeners();
+    if (hasQueued) _schedule();
+    // 补加历史已下载到"已下载的书"书架（幂等）
+    await _syncDownloadedToShelf();
+    // 预生成 PDF 默认封面：早期 PDF 与 TXT 共用 default_txt.png，书架显示时
+    // 会重指到 default_pdf.png，此处确保文件就绪（旧数据兼容，幂等）。
+    await _ensureDefaultCover('pdf');
+  }
+
+  /// 启动时把历史已下载图书补加到"已下载的书"书架（幂等）
+  Future<void> _syncDownloadedToShelf() async {
+    final items = <BookshelfItem>[];
+    for (final t in _tasks.values) {
+      if (t.status != BookDownloadStatus.completed) continue;
+      if (t.isLocalImport) continue; // 本地导入的书已入"本地漫画/本地图书"书架，不重复入"已下载的书"
+      final snapshot = Book(
+        id: t.bookId,
+        hash: t.hash,
+        title: t.title,
+        author: t.author,
+        cover: t.cover,
+        extension: t.extension,
+      );
+      items.add(
+        BookshelfItem(
+          bookshelfId: BookshelfService.presetDownloaded,
+          itemId: t.bookId,
+          type: BookshelfItemType.book,
+          addedAt: DateTime.now().millisecondsSinceEpoch,
+          meta: jsonEncode(snapshot.toJson()),
+        ),
+      );
+    }
+    if (items.isNotEmpty) {
+      await BookshelfService().ensureItemsInShelf(items);
+    }
   }
 
   Future<void> _persist() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final records = _tasks.values
-          .where((t) =>
-              t.status == BookDownloadStatus.completed ||
-              t.status == BookDownloadStatus.paused ||
-              t.status == BookDownloadStatus.failed)
+          .where(
+            (t) =>
+                t.status == BookDownloadStatus.completed ||
+                t.status == BookDownloadStatus.paused ||
+                t.status == BookDownloadStatus.failed ||
+                t.status == BookDownloadStatus.queued ||
+                t.status == BookDownloadStatus.downloading,
+          )
           .map((t) => t.toJson())
           .toList();
       await prefs.setString(_kRecords, jsonEncode(records));
     } catch (e) {
       _log('保存记录失败: $e');
     }
+  }
+
+  /// 节流版进度通知：最多每 150ms 触发一次，窗口内排尾随保证最终必刷新。
+  void _notifyProgress() {
+    final now = DateTime.now();
+    if (_lastProgressNotify == null ||
+        now.difference(_lastProgressNotify!) >=
+            const Duration(milliseconds: 150)) {
+      _lastProgressNotify = now;
+      notifyListeners();
+      return;
+    }
+    _progressNotifyTimer ??= Timer(const Duration(milliseconds: 150), () {
+      _progressNotifyTimer = null;
+      _lastProgressNotify = DateTime.now();
+      notifyListeners();
+    });
+  }
+
+  /// 节流版落盘：最多每 1s 一次，窗口内排尾随保证最终必落盘。
+  /// 仅用于下载流程；用户主动操作仍直接调 _persist() 即时写入。
+  void _schedulePersist() {
+    final now = DateTime.now();
+    if (_lastPersist == null ||
+        now.difference(_lastPersist!) >= const Duration(seconds: 1)) {
+      _lastPersist = now;
+      _persist();
+      return;
+    }
+    _persistTrailingTimer ??= Timer(const Duration(seconds: 1), () {
+      _persistTrailingTimer = null;
+      _lastPersist = DateTime.now();
+      _persist();
+    });
   }
 
   Future<Directory> _booksDir() async {
@@ -218,8 +338,106 @@ class BookDownloadService extends ChangeNotifier {
       ..cancelToken = null;
     _tasks[book.id] = task;
     notifyListeners();
+    _persist(); // 立即持久化排队任务，退出软件不丢
     _schedule();
     return BookDownloadResult.started;
+  }
+
+  /// 导入本地图书文件：复制到 Books 目录，记为已完成任务（不占下载名额）。
+  /// epub/mobi 提取内嵌封面，txt/pdf 生成默认封面，其余无封面。
+  /// 返回新书 bookId；失败返回 null。供书架页"导入本地图书"使用。
+  Future<String?> importLocalFile(
+    File src, {
+    required String title,
+    required String extension,
+  }) async {
+    try {
+      final dir = await _booksDir();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final bookId = 'local_${now}_${_localSeq++}';
+      final ext = extension.toLowerCase();
+      final dest = File('${dir.path}/${_sanitize(title)}_$bookId.$ext');
+      await src.copy(dest.path);
+
+      // 封面：epub/mobi 提取内嵌封面，txt/pdf 用默认封面
+      String? coverPath;
+      if (ext == 'epub') {
+        try {
+          final coverBytes = await compute(BookParser.extractEpubCover, src);
+          coverPath = await _saveCoverBytes(bookId, coverBytes);
+        } catch (e) {
+          _log('提取 epub 封面失败: $e');
+        }
+      } else if (ext == 'mobi' || ext == 'azw' || ext == 'azw3') {
+        try {
+          final coverBytes = await compute(BookParser.extractMobiCover, src);
+          coverPath = await _saveCoverBytes(bookId, coverBytes);
+        } catch (e) {
+          _log('提取 mobi 封面失败: $e');
+        }
+      } else if (ext == 'txt' || ext == 'pdf') {
+        coverPath = await _ensureDefaultCover(ext);
+      }
+
+      final task = BookDownloadTask(
+        bookId: bookId,
+        hash: '',
+        title: title,
+        extension: ext,
+        status: BookDownloadStatus.completed,
+        progress: 1,
+        localPath: dest.path,
+        downloadedAt: now,
+        isLocalImport: true,
+        cover: coverPath,
+      );
+      _tasks[bookId] = task;
+      _persist();
+      notifyListeners();
+      _log('导入本地图书: $title');
+      return bookId;
+    } catch (e) {
+      _log('导入本地图书失败: $e');
+      return null;
+    }
+  }
+
+  /// 封面图存放目录：下载目录下 `bookDir/covers` 子目录。
+  Future<Directory> _coversDir() async {
+    final base = await SettingsService.downloadBaseDir();
+    final dir = Directory('${base.path}/${AppConstants.bookDir}/covers');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return dir;
+  }
+
+  /// 保存提取到的封面字节，返回路径；bytes 为空返回 null。
+  Future<String?> _saveCoverBytes(String bookId, Uint8List? bytes) async {
+    if (bytes == null || bytes.isEmpty) return null;
+    try {
+      final dir = await _coversDir();
+      final file = File('${dir.path}/$bookId.png');
+      await file.writeAsBytes(bytes);
+      return file.path;
+    } catch (e) {
+      _log('保存封面失败: $e');
+      return null;
+    }
+  }
+
+  /// 确保默认封面文件存在（按 ext 首次生成，后续复用），返回路径；失败返回 null。
+  /// txt/pdf 各一份（default_txt.png / default_pdf.png），配色与标识不同。
+  Future<String?> _ensureDefaultCover(String ext) async {
+    try {
+      final dir = await _coversDir();
+      final file = File('${dir.path}/default_$ext.png');
+      if (await file.exists()) return file.path;
+      final bytes = await CoverGenerator.generateDefaultCover(ext: ext);
+      await file.writeAsBytes(bytes);
+      return file.path;
+    } catch (e) {
+      _log('生成默认封面失败: $e');
+      return null;
+    }
   }
 
   /// 调度：按"同时下载量"并发启动排队任务
@@ -251,26 +469,24 @@ class BookDownloadService extends ChangeNotifier {
 
   Future<void> _downloadOne(BookDownloadTask task) async {
     final z = ZlibraryService();
+    // 捕获本次下载的 CancelToken：重试延迟期间若被暂停后重试(resume)接管，
+    // task.cancelToken 会被替换，据此识别并静默退出，避免并发写同一文件。
+    final CancelToken? myToken = task.cancelToken;
     try {
-      final link =
-          await z.getDownloadLink(task.bookId, task.hash, startIndex: task.startIndex);
+      final link = await z.getDownloadLink(
+        task.bookId,
+        task.hash,
+        startIndex: task.startIndex,
+      );
       if (!_tasks.containsKey(task.bookId)) return; // 已取消
       if (task.status == BookDownloadStatus.paused) return; // 已暂停
-      if (link == null) {
-        _releaseQuota(task, z);
-        task
-          ..status = BookDownloadStatus.failed
-          ..error = '无可用账号';
-        await _persist();
-        notifyListeners();
-        return;
-      }
       final dir = await _booksDir();
-      final ext = (task.extension?.isNotEmpty == true
-              ? task.extension!
-              : 'epub')
-          .toLowerCase();
-      final file = File('${dir.path}/${_sanitize(task.title)}_${task.bookId}.$ext');
+      final ext =
+          (task.extension?.isNotEmpty == true ? task.extension! : 'epub')
+              .toLowerCase();
+      final file = File(
+        '${dir.path}/${_sanitize(task.title)}_${task.bookId}.$ext',
+      );
 
       // 续传：从已下载字节数接着下（HTTP Range）
       int startByte = 0;
@@ -283,26 +499,10 @@ class BookDownloadService extends ChangeNotifier {
         if (startByte > 0) _log('续传 ${task.title}：从 $startByte 字节继续');
       }
 
-      if (startByte > 0) {
-        await _downloadWithResume(link, file, startByte, task);
-      } else {
-        await _dio.download(
-          link.url,
-          file.path,
-          options: Options(headers: link.headers),
-          cancelToken: task.cancelToken,
-          deleteOnError: false, // 保留暂停分片，供续传
-          onReceiveProgress: (r, total) {
-            if (total > 0) {
-              final p = r / total;
-              if ((p - task.progress).abs() >= 0.01 || p >= 1) {
-                task.progress = p;
-                notifyListeners();
-              }
-            }
-          },
-        );
-      }
+      // 实际下载：带自动续传重试，中途断网按已下载字节接着下
+      await _downloadWithRetry(link, file, startByte, task, myToken);
+      // 重试延迟期间可能被暂停后重试(resume)接管，此时静默退出
+      if (!identical(task.cancelToken, myToken)) return;
       if (!_tasks.containsKey(task.bookId)) return; // 已取消
       if (task.status == BookDownloadStatus.paused) return; // 已暂停
       task
@@ -310,11 +510,46 @@ class BookDownloadService extends ChangeNotifier {
         ..progress = 1
         ..localPath = file.path
         ..downloadedAt = DateTime.now().millisecondsSinceEpoch;
-      await _persist();
+      _schedulePersist();
       notifyListeners();
       _log('下载完成: ${task.title}');
+      // 自动加入"已下载的书"书架（幂等）
+      final snapshot = Book(
+        id: task.bookId,
+        hash: task.hash,
+        title: task.title,
+        author: task.author,
+        cover: task.cover,
+        extension: task.extension,
+      );
+      await BookshelfService().addToBookshelf(
+        BookshelfService.presetDownloaded,
+        task.bookId,
+        BookshelfItemType.book,
+        meta: jsonEncode(snapshot.toJson()),
+      );
       // 登录态：下载成功后刷新服务端已下载数，及时更新头像下方显示
       if (z.isLoggedIn) z.refreshUserProfile();
+    } on ZlibraryException catch (e) {
+      if (!_tasks.containsKey(task.bookId)) return; // 已取消，静默
+      if (task.status == BookDownloadStatus.paused) return; // 已暂停，静默
+      _releaseQuota(task, z);
+      task
+        ..status = BookDownloadStatus.failed
+        ..error = _downloadErrorMsg(e);
+      _schedulePersist();
+      notifyListeners();
+      _log('下载失败: ${task.title} - ${e.code}');
+    } on DioException catch (e) {
+      if (!_tasks.containsKey(task.bookId)) return; // 已取消，静默
+      if (task.status == BookDownloadStatus.paused) return; // 已暂停，静默
+      _releaseQuota(task, z);
+      task
+        ..status = BookDownloadStatus.failed
+        ..error = _dioErrorMsg(e);
+      _schedulePersist();
+      notifyListeners();
+      _log('下载失败: ${task.title} - ${_dioErrorBrief(e)}');
     } catch (e) {
       if (!_tasks.containsKey(task.bookId)) return; // 已取消，静默
       if (task.status == BookDownloadStatus.paused) return; // 已暂停，静默
@@ -322,9 +557,27 @@ class BookDownloadService extends ChangeNotifier {
       task
         ..status = BookDownloadStatus.failed
         ..error = '$e';
-      await _persist();
+      _schedulePersist();
       notifyListeners();
       _log('下载失败: ${task.title} - $e');
+    }
+  }
+
+  /// z-library 业务异常 -> 用户可读文案（对应 cmbook 下载状态码 -6/-7/-8 映射）。
+  String _downloadErrorMsg(ZlibraryException e) {
+    switch (e.code) {
+      case 'quota_exceeded':
+        return '账号今日下载额度已用完';
+      case 'no_login':
+        return '登录已失效，请重新登录';
+      case 'unavailable':
+        return '图书功能暂不可用，请等待恢复';
+      case 'no_account':
+        return '没有可用的内置账号';
+      case 'rate_limited':
+        return '请求过于频繁，请稍后再试';
+      default:
+        return e.message;
     }
   }
 
@@ -379,13 +632,126 @@ class BookDownloadService extends ChangeNotifier {
           final p = written / total;
           if ((p - task.progress).abs() >= 0.01 || p >= 1) {
             task.progress = p;
-            notifyListeners();
+            _notifyProgress();
           }
         }
       }
     } finally {
       await raf.close();
     }
+  }
+
+  /// 下载最大重试次数（可恢复的网络中断按已下载字节续传）。
+  static const int _kDownloadMaxRetries = 3;
+
+  /// 带自动续传的下载：遇到可恢复的网络中断（断连/超时/5xx）按已下载字节
+  /// 续传重试，最多 [_kDownloadMaxRetries] 次；不可恢复或耗尽则向上抛出，
+  /// 交由 [_downloadOne] 的 DioException 分支给出可读错误。
+  /// [myToken] 为本次下载的 CancelToken；重试延迟期间若被暂停后重试(resume)
+  /// 接管（token 已替换）则静默退出，避免与新的下载并发写同一文件。
+  Future<void> _downloadWithRetry(
+    DownloadLink link,
+    File file,
+    int startByte,
+    BookDownloadTask task,
+    CancelToken? myToken,
+  ) async {
+    for (var attempt = 0; ; attempt++) {
+      if (!identical(task.cancelToken, myToken)) return; // 已被接管
+      try {
+        // 首次用传入的 startByte；重试时从磁盘已下载字节接着下
+        final sb = attempt == 0
+            ? startByte
+            : (await file.exists() ? await file.length() : 0);
+        if (sb > 0) {
+          if (attempt > 0) _log('续传重试 ${task.title}：从 $sb 字节继续');
+          await _downloadWithResume(link, file, sb, task);
+        } else {
+          await _dio.download(
+            link.url,
+            file.path,
+            options: Options(headers: link.headers),
+            cancelToken: myToken,
+            deleteOnError: false, // 保留中断分片，供续传
+            onReceiveProgress: (r, total) {
+              if (total > 0) {
+                final p = r / total;
+                if ((p - task.progress).abs() >= 0.01 || p >= 1) {
+                  task.progress = p;
+                  _notifyProgress();
+                }
+              }
+            },
+          );
+        }
+        return; // 下载成功
+      } on DioException catch (e) {
+        if (e.type == DioExceptionType.cancel) rethrow; // 取消交外层静默
+        if (_isTransientDioError(e) && attempt < _kDownloadMaxRetries - 1) {
+          final wait = Duration(seconds: (attempt + 1) * 2); // 2s, 4s
+          _log(
+            '传输中断(${_dioErrorBrief(e)})，${wait.inSeconds}s 后第${attempt + 2}次续传重试',
+          );
+          await Future.delayed(wait);
+          continue;
+        }
+        rethrow; // 不可恢复或重试耗尽
+      }
+    }
+  }
+
+  /// 是否为可恢复的传输错误：断连/超时/unknown 一律可恢复；
+  /// badResponse 仅 5xx 可恢复（4xx 多为链接失效/鉴权，不重试）。
+  bool _isTransientDioError(DioException e) {
+    switch (e.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.receiveTimeout:
+      case DioExceptionType.connectionError:
+      case DioExceptionType.unknown:
+        return true;
+      case DioExceptionType.badResponse:
+        final s = e.response?.statusCode ?? 0;
+        return s >= 500 && s < 600;
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.badCertificate:
+      case DioExceptionType.transformTimeout:
+      case DioExceptionType.cancel:
+        return false;
+    }
+  }
+
+  /// DioException -> 用户可读文案（替代裸 'DioException [unknown]: null'）。
+  String _dioErrorMsg(DioException e) {
+    final msg = e.message;
+    final detail = (msg != null && msg.isNotEmpty)
+        ? msg
+        : (e.error != null ? e.error.toString() : '');
+    switch (e.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.connectionError:
+        return '网络连接失败，请检查网络后重试';
+      case DioExceptionType.sendTimeout:
+        return '发送请求超时，请重试';
+      case DioExceptionType.receiveTimeout:
+        return '接收数据超时，请重试';
+      case DioExceptionType.badResponse:
+        final s = e.response?.statusCode;
+        return s != null ? '服务器错误（$s），请稍后重试' : '服务器返回异常，请稍后重试';
+      case DioExceptionType.badCertificate:
+        return '证书校验失败，请稍后重试';
+      case DioExceptionType.transformTimeout:
+        return '数据解析失败，请重试';
+      case DioExceptionType.cancel:
+        return '已取消';
+      case DioExceptionType.unknown:
+        return detail.isNotEmpty ? '网络连接中断：$detail' : '网络连接中断，请重试';
+    }
+  }
+
+  /// DioException 简短摘要（仅用于日志）。
+  String _dioErrorBrief(DioException e) {
+    final s = e.response?.statusCode;
+    return s != null ? '${e.type.name}/$s' : e.type.name;
   }
 
   void _releaseQuota(BookDownloadTask task, ZlibraryService z) {
@@ -490,6 +856,41 @@ class BookDownloadService extends ChangeNotifier {
     _tasks.remove(bookId);
     await _persist();
     notifyListeners();
+  }
+
+  /// 批量删除多本已下载任务（删文件 + 记录，一次持久化 + 一次通知）
+  Future<void> deleteBooks(Iterable<String> bookIds) async {
+    final set = bookIds.toSet();
+    if (set.isEmpty) return;
+    for (final bookId in set) {
+      final t = _tasks[bookId];
+      if (t == null) continue;
+      if (t.localPath != null) {
+        try {
+          final f = File(t.localPath!);
+          if (await f.exists()) await f.delete();
+        } catch (e) {
+          _log('删除文件失败: $e');
+        }
+      }
+      _tasks.remove(bookId);
+    }
+    await _persist();
+    notifyListeners();
+  }
+
+  /// 本地导入书移出书架后：若已不在任何书架，删文件+记录（清理孤儿）。
+  /// 非导入书或仍在书架中则不动。
+  Future<void> cleanupOrphanedImport(String bookId) async {
+    final t = _tasks[bookId];
+    if (t == null || !t.isLocalImport) return;
+    if (BookshelfService()
+        .getBookshelvesForItem(bookId, BookshelfItemType.book)
+        .isNotEmpty) {
+      return;
+    }
+    await deleteTask(bookId);
+    _log('清理导入书孤儿: ${t.title}');
   }
 
   void pauseAll() {

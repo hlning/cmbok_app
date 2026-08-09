@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -6,10 +7,12 @@ import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import '../models/comic.dart';
+import '../services/bookshelf_service.dart';
 import '../services/comic_api.dart';
 import '../services/download_service.dart';
 import '../services/reading_progress_service.dart';
 import '../services/settings_service.dart';
+import '../theme/jelly_theme.dart';
 
 /// 漫画阅读页面
 class ReaderPage extends StatefulWidget {
@@ -40,6 +43,9 @@ class _ReaderPageState extends State<ReaderPage> {
   bool _isLoading = true;
   String? _error;
   int _currentIndex = 0;
+
+  /// 最近一次归位的书架状态（presetReading/presetFinished），避免频繁移动
+  String? _lastAppliedStatus;
   bool _showControls = true;
   bool _useLocal = false; // 是否使用本地已下载图片
 
@@ -81,6 +87,10 @@ class _ReaderPageState extends State<ReaderPage> {
   /// 当前是否为拼页模式
   bool get _isContinuousMode =>
       SettingsService().readingMode == ReadingMode.continuous;
+
+  /// 当前是否为消散模式（逐页交叉淡入淡出）
+  bool get _isDissolveMode =>
+      SettingsService().readingMode == ReadingMode.dissolve;
 
   @override
   void initState() {
@@ -127,6 +137,7 @@ class _ReaderPageState extends State<ReaderPage> {
       // 优先本地已下载图片（离线阅读）
       final local = await DownloadService().getLocalImages(
         widget.comic.pathWord,
+        widget.comic.title,
         _currentChapter.id,
       );
       if (local.isNotEmpty) {
@@ -158,6 +169,8 @@ class _ReaderPageState extends State<ReaderPage> {
             _currentChapter,
             _currentIndex,
           );
+          // 按进度归位"正在读"/"已读完"书架
+          _applyReadingStatus();
         } else {
           _currentIndex = 0;
         }
@@ -249,6 +262,203 @@ class _ReaderPageState extends State<ReaderPage> {
     _loadImages();
   }
 
+  // ---------------- 目录 ----------------
+
+  /// 章节目录抽屉（同图书阅读器：右侧滑入，自动定位当前话）
+  void _showToc() {
+    final chapters = _allChapters;
+    if (chapters.isEmpty) return;
+    final drawerWidth = MediaQuery.sizeOf(context).width * 0.75;
+    final currentIndex = chapters.indexWhere((c) => c.id == _currentChapter.id);
+    final itemScrollController = ItemScrollController();
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: '目录',
+      transitionDuration: const Duration(milliseconds: 250),
+      pageBuilder: (ctx, anim, secondaryAnim) {
+        final isDark = Theme.of(ctx).brightness == Brightness.dark;
+        final textColor = isDark
+            ? Colors.white.withValues(alpha: 0.92)
+            : JellyTheme.textPrimaryLight;
+        final subColor = isDark
+            ? Colors.white.withValues(alpha: 0.5)
+            : JellyTheme.textSecondary;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (itemScrollController.isAttached) {
+            itemScrollController.jumpTo(index: currentIndex);
+          }
+        });
+        return Align(
+          alignment: Alignment.centerRight,
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              width: drawerWidth,
+              height: double.infinity,
+              decoration: BoxDecoration(
+                color: isDark ? JellyTheme.cardDark : JellyTheme.cardLight,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(20),
+                  bottomLeft: Radius.circular(20),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.25),
+                    blurRadius: 30,
+                    offset: const Offset(-4, 0),
+                  ),
+                ],
+              ),
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 14, 8, 12),
+                      child: Row(
+                        children: [
+                          const Text(
+                            '目录',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: JellyTheme.primary.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '${chapters.length} 话',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: JellyTheme.primary,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            icon: Icon(
+                              Icons.close_rounded,
+                              size: 20,
+                              color: subColor,
+                            ),
+                            onPressed: () => Navigator.pop(ctx),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Divider(height: 1, color: subColor.withValues(alpha: 0.15)),
+                    Expanded(
+                      child: ScrollablePositionedList.builder(
+                        itemScrollController: itemScrollController,
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        itemCount: chapters.length,
+                        itemBuilder: (ctx, i) {
+                          final cur = i == currentIndex;
+                          return Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              onTap: () {
+                                Navigator.pop(ctx);
+                                _goToChapter(chapters[i]);
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 12,
+                                ),
+                                decoration: cur
+                                    ? BoxDecoration(
+                                        color: JellyTheme.primary.withValues(
+                                          alpha: 0.1,
+                                        ),
+                                        border: Border(
+                                          left: BorderSide(
+                                            color: JellyTheme.primary,
+                                            width: 3,
+                                          ),
+                                        ),
+                                      )
+                                    : null,
+                                child: Text(
+                                  chapters[i].title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: cur ? JellyTheme.primary : textColor,
+                                    fontWeight: cur
+                                        ? FontWeight.w700
+                                        : FontWeight.w400,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+      transitionBuilder: (ctx, anim, secondaryAnim, child) {
+        final offset = Tween<Offset>(
+          begin: const Offset(1, 0),
+          end: Offset.zero,
+        ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic));
+        return SlideTransition(position: offset, child: child);
+      },
+    );
+  }
+
+  /// 按当前进度把漫画归位到"正在读"/"已读完"书架（幂等，带状态缓存避免频繁调用）。
+  /// 读完判定：当前章最后一页 且 当前章是最后一话（无下一话，与 _nextChapter 一致）。
+  /// 未读完时仅已读达阈值（readingShelfThreshold）才归位"正在读"，
+  /// 不足阈值直接返回且不缓存，保证读到阈值章节时仍能触发归位。
+  void _applyReadingStatus() {
+    if (_images.isEmpty) return;
+    final page = _isContinuousMode
+        ? _continuousPageNotifier.value
+        : _currentIndex;
+    final allChapters = _allChapters;
+    final ci = allChapters.indexWhere((c) => c.id == _currentChapter.id);
+    final isLastChapter = ci < 0 || ci >= allChapters.length - 1;
+    final finished = page + 1 >= _images.length && isLastChapter;
+    final target = finished
+        ? BookshelfService.presetFinished
+        : BookshelfService.presetReading;
+    if (!finished) {
+      // 未读完：仅已读达阈值才归位"正在读"，否则不归位也不缓存
+      final seen =
+          ReadingProgressService()
+              .getProgress(widget.comic.pathWord)
+              ?.seenChapterIds
+              .length ??
+          0;
+      if (seen < ReadingProgressService.readingShelfThreshold) return;
+    }
+    if (_lastAppliedStatus == target) return;
+    _lastAppliedStatus = target;
+    ReadingProgressService().setFinished(
+      widget.comic.pathWord,
+      finished,
+      meta: jsonEncode(widget.comic.toJson()),
+    );
+  }
+
   /// 简短提示
   void _showTip(String msg) {
     if (!mounted) return;
@@ -266,11 +476,11 @@ class _ReaderPageState extends State<ReaderPage> {
 
   /// 点击翻页区域：左1/3 上一页/上一话，右1/3 下一页/下一话，中间切换控制栏
   void _handleTap(TapUpDetails details) {
-    final width = MediaQuery.sizeOf(context).width;
+    final size = MediaQuery.sizeOf(context);
     final dx = details.globalPosition.dx;
-    if (dx < width / 3) {
+    if (dx < size.width / 3) {
       _onTapLeft();
-    } else if (dx > width * 2 / 3) {
+    } else if (dx > size.width * 2 / 3) {
       _onTapRight();
     } else {
       _toggleControls();
@@ -280,6 +490,14 @@ class _ReaderPageState extends State<ReaderPage> {
   void _onTapLeft() {
     if (_isContinuousMode) {
       _scrollUp();
+      return;
+    }
+    if (_isDissolveMode) {
+      if (_currentIndex > 0) {
+        _goDissolvePage(_currentIndex - 1);
+      } else {
+        _prevChapter();
+      }
       return;
     }
     if (_currentIndex > 0) {
@@ -297,6 +515,14 @@ class _ReaderPageState extends State<ReaderPage> {
       _scrollDown();
       return;
     }
+    if (_isDissolveMode) {
+      if (_currentIndex < _images.length - 1) {
+        _goDissolvePage(_currentIndex + 1);
+      } else {
+        _nextChapter();
+      }
+      return;
+    }
     if (_currentIndex < _images.length - 1) {
       _pageController.nextPage(
         duration: const Duration(milliseconds: 250),
@@ -305,6 +531,18 @@ class _ReaderPageState extends State<ReaderPage> {
     } else {
       _nextChapter();
     }
+  }
+
+  /// 消散模式：交叉淡入淡出到目标页（越界由调用方处理）
+  void _goDissolvePage(int index) {
+    ReadingProgressService().updatePageIndex(
+      widget.comic.pathWord,
+      _currentChapter.id,
+      index,
+    );
+    setState(() => _currentIndex = index);
+    _preloadAhead(index);
+    _applyReadingStatus();
   }
 
   /// 拼页模式：翻到上一张（已在第一张时上一话）
@@ -371,6 +609,7 @@ class _ReaderPageState extends State<ReaderPage> {
       idx,
     );
     _preloadAhead(idx);
+    _applyReadingStatus();
   }
 
   /// 拼页模式：根据各图片实际渲染位置，取视口顶部所在图片更新页码与续读进度。
@@ -474,6 +713,8 @@ class _ReaderPageState extends State<ReaderPage> {
 
     final Widget gallery = _isContinuousMode
         ? _buildContinuousGallery()
+        : _isDissolveMode
+        ? _buildDissolveGallery()
         : _buildPagedGallery();
     // 章节加载完成时淡入过渡
     // 外层 PageStorage 用每次加载重建的空桶，让 ScrollablePositionedList
@@ -491,11 +732,12 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
-  /// 翻页模式：PhotoViewGallery 左右翻页
-  Widget _buildPagedGallery() {
+  /// 翻页模式：PhotoViewGallery 逐页翻页（横向=左右翻页，竖向=上下翻页）
+  Widget _buildPagedGallery({Axis scrollDirection = Axis.horizontal}) {
     return GestureDetector(
       onTapUp: _handleTap,
       child: PhotoViewGallery.builder(
+        scrollDirection: scrollDirection,
         scrollPhysics: const ClampingScrollPhysics(),
         builder: (context, index) {
           return PhotoViewGalleryPageOptions(
@@ -546,9 +788,66 @@ class _ReaderPageState extends State<ReaderPage> {
             _currentIndex = index;
           });
           _preloadAhead(index);
+          _applyReadingStatus();
         },
       ),
     );
+  }
+
+  /// 消散模式：逐页显示，换页时旧页淡出、新页淡入（交叉淡入淡出）
+  Widget _buildDissolveGallery() {
+    return GestureDetector(
+      onTapUp: _handleTap,
+      child: ColoredBox(
+        color: Colors.black,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 600),
+          switchInCurve: Curves.easeInOut,
+          switchOutCurve: Curves.easeInOut,
+          transitionBuilder: (child, anim) =>
+              FadeTransition(opacity: anim, child: child),
+          child: _buildDissolveImage(_currentIndex),
+        ),
+      ),
+    );
+  }
+
+  /// 消散模式单页图（按 index 取 key，AnimatedSwitcher 据此触发交叉淡入淡出）
+  Widget _buildDissolveImage(int index) {
+    if (index < 0 || index >= _images.length) {
+      return const SizedBox.shrink();
+    }
+    // 限制解码分辨率至屏幕物理宽度，避免大图（如 2244×2717）解码出 ~24MB 副本
+    final dw =
+        (MediaQuery.sizeOf(context).width *
+                MediaQuery.devicePixelRatioOf(context))
+            .round();
+    final Widget image;
+    if (_useLocal) {
+      image = Image.file(
+        File(_images[index]),
+        fit: BoxFit.contain,
+        cacheWidth: dw,
+        errorBuilder: (context, error, stackTrace) => _buildBrokenImage(index),
+      );
+    } else {
+      image = CachedNetworkImage(
+        imageUrl: _images[index],
+        fit: BoxFit.contain,
+        memCacheWidth: dw,
+        fadeInDuration: Duration.zero,
+        fadeOutDuration: Duration.zero,
+        placeholder: (context, url) => const Center(
+          child: SizedBox(
+            width: 30,
+            height: 30,
+            child: CircularProgressIndicator(),
+          ),
+        ),
+        errorWidget: (context, url, error) => _buildBrokenImage(index),
+      );
+    }
+    return SizedBox.expand(key: ValueKey(index), child: image);
   }
 
   /// 拼页模式：所有图片纵向连续滚动，按索引定位/翻页
@@ -570,12 +869,18 @@ class _ReaderPageState extends State<ReaderPage> {
   Widget _buildContinuousImage(int index) {
     // GlobalKey 用于量取图片渲染高度（拼页上一页像素偏移换算需要）
     final imageKey = _keyOf(index);
+    // 限制解码分辨率至屏幕物理宽度，避免大图解码出超大副本占用内存
+    final dw =
+        (MediaQuery.sizeOf(context).width *
+                MediaQuery.devicePixelRatioOf(context))
+            .round();
     if (_useLocal) {
       return Image.file(
         File(_images[index]),
         key: imageKey,
         fit: BoxFit.contain,
         width: double.infinity,
+        cacheWidth: dw,
         // 解码前 frame 为 null，显示固定高度占位，避免初始高度 0 触发
         // ScrollablePositionedList 的定位 bug（本地图片特有）。解码后切回真实图片。
         frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
@@ -595,6 +900,7 @@ class _ReaderPageState extends State<ReaderPage> {
       imageUrl: _images[index],
       fit: BoxFit.contain,
       width: double.infinity,
+      memCacheWidth: dw,
       fadeInDuration: Duration.zero,
       fadeOutDuration: Duration.zero,
       placeholder: (context, url) => const SizedBox(
@@ -713,6 +1019,23 @@ class _ReaderPageState extends State<ReaderPage> {
                         ),
                         label: const Text(
                           '下一话',
+                          style: TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                  // 目录按钮（右对齐，同图书阅读器）
+                  Row(
+                    children: [
+                      const Expanded(child: SizedBox()),
+                      TextButton.icon(
+                        onPressed: _showToc,
+                        icon: const Icon(
+                          Icons.menu_book_rounded,
+                          color: Colors.white,
+                        ),
+                        label: const Text(
+                          '目录',
                           style: TextStyle(color: Colors.white),
                         ),
                       ),

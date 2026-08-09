@@ -1,12 +1,17 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../models/book.dart';
+import '../models/bookshelf.dart';
 import '../services/book_download_service.dart';
 import '../services/book_favorites_service.dart';
+import '../services/book_reading_progress_service.dart';
+import '../services/bookshelf_service.dart';
 import '../services/zlibrary_service.dart';
 import '../theme/jelly_theme.dart';
+import '../widgets/jelly_bookshelf_dialog.dart';
 import 'book_reader_page.dart';
 import 'zlibrary_auth_page.dart';
 
@@ -16,6 +21,7 @@ import 'zlibrary_auth_page.dart';
 class BookDetailPage extends StatefulWidget {
   final Book book;
   final String? heroTag;
+
   /// 来自搜索页的结果列表，用于「推荐图书」随机取 5 本，避免额外请求。
   final List<Book>? searchResults;
 
@@ -59,8 +65,8 @@ class _BookDetailPageState extends State<BookDetailPage> {
   Future<void> _loadRecommendationsByAuthor() async {
     final keyword =
         (widget.book.author != null && widget.book.author!.isNotEmpty)
-            ? widget.book.author!
-            : widget.book.title;
+        ? widget.book.author!
+        : widget.book.title;
     if (keyword.isEmpty) return;
     setState(() => _loadingRec = true);
     try {
@@ -115,7 +121,8 @@ class _BookDetailPageState extends State<BookDetailPage> {
   String _limitExceededMsg() {
     final z = ZlibraryService();
     // 登录态限额优先用服务端实际值，未取到回退硬编码
-    final loggedLimit = z.serverDownloadsLimit ?? ZlibraryService.loggedDailyLimit;
+    final loggedLimit =
+        z.serverDownloadsLimit ?? ZlibraryService.loggedDailyLimit;
     return z.isLoggedIn
         ? '今日下载已达 $loggedLimit 本上限，请明天再试'
         : '今日内置账号下载已达 ${ZlibraryService.builtinDailyLimit} 本上限，登录自有账号可下载更多';
@@ -125,11 +132,13 @@ class _BookDetailPageState extends State<BookDetailPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        content: Text(msg),
-        duration: const Duration(seconds: 2),
-        behavior: SnackBarBehavior.floating,
-      ));
+      ..showSnackBar(
+        SnackBar(
+          content: Text(msg),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
   }
 
   /// 去除 z-library 简介里的 HTML 标签，保留段落换行
@@ -181,8 +190,11 @@ class _BookDetailPageState extends State<BookDetailPage> {
           child: (widget.book.cover ?? '').isEmpty
               ? Container(
                   color: isDark ? JellyTheme.cardDark : Colors.grey[200],
-                  child: const Icon(Icons.menu_book_rounded,
-                      size: 56, color: Colors.grey),
+                  child: const Icon(
+                    Icons.menu_book_rounded,
+                    size: 56,
+                    color: Colors.grey,
+                  ),
                 )
               : CachedNetworkImage(
                   imageUrl: widget.book.cover!,
@@ -192,8 +204,11 @@ class _BookDetailPageState extends State<BookDetailPage> {
                   ),
                   errorWidget: (c, u, e) => Container(
                     color: isDark ? JellyTheme.cardDark : Colors.grey[200],
-                    child: const Icon(Icons.broken_image,
-                        size: 48, color: Colors.grey),
+                    child: const Icon(
+                      Icons.broken_image,
+                      size: 48,
+                      color: Colors.grey,
+                    ),
                   ),
                 ),
         ),
@@ -211,6 +226,10 @@ class _BookDetailPageState extends State<BookDetailPage> {
     final desc = book.description == null
         ? null
         : _stripHtml(book.description!);
+
+    final downloadTask = BookDownloadService().task(book.id);
+    final downloadCompleted =
+        downloadTask?.status == BookDownloadStatus.completed;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 8),
@@ -256,8 +275,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.star_rounded,
-                    size: 16, color: Colors.amber),
+                const Icon(Icons.star_rounded, size: 16, color: Colors.amber),
                 const SizedBox(width: 4),
                 Text(
                   book.interestScore!.toStringAsFixed(1),
@@ -268,9 +286,10 @@ class _BookDetailPageState extends State<BookDetailPage> {
                   ),
                 ),
                 const SizedBox(width: 4),
-                Text('兴趣评分',
-                    style:
-                        TextStyle(fontSize: 11, color: secondaryColor)),
+                Text(
+                  '兴趣评分',
+                  style: TextStyle(fontSize: 11, color: secondaryColor),
+                ),
               ],
             ),
           ],
@@ -298,13 +317,23 @@ class _BookDetailPageState extends State<BookDetailPage> {
             ],
           ),
           const SizedBox(height: 16),
-          // 收藏 / 下载 胶囊
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          // 收藏 / 书架 / 阅读(或下载) 胶囊；已下载时「重新下载」换行显示
+          Column(
             children: [
-              _buildFavoriteCapsule(),
-              const SizedBox(width: 12),
-              _buildDownloadCapsule(),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 10,
+                runSpacing: 8,
+                children: [
+                  _buildFavoriteCapsule(),
+                  _buildBookshelfCapsule(),
+                  _buildDownloadCapsule(downloadTask),
+                ],
+              ),
+              if (downloadCompleted) ...[
+                const SizedBox(height: 10),
+                _buildRedownloadButton(),
+              ],
             ],
           ),
           // 简介
@@ -330,8 +359,8 @@ class _BookDetailPageState extends State<BookDetailPage> {
         color: highlight
             ? JellyTheme.primary.withValues(alpha: 0.15)
             : (isDark
-                ? Colors.white.withValues(alpha: 0.08)
-                : Colors.black.withValues(alpha: 0.05)),
+                  ? Colors.white.withValues(alpha: 0.08)
+                  : Colors.black.withValues(alpha: 0.05)),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Text(
@@ -360,12 +389,12 @@ class _BookDetailPageState extends State<BookDetailPage> {
       child: InkWell(
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 17, color: Colors.white),
-              const SizedBox(width: 6),
+              Icon(icon, size: 15, color: Colors.white),
+              const SizedBox(width: 4),
               Text(
                 label,
                 style: const TextStyle(
@@ -394,26 +423,49 @@ class _BookDetailPageState extends State<BookDetailPage> {
     );
   }
 
-  Widget _buildDownloadCapsule() {
-    final task = BookDownloadService().task(widget.book.id);
+  Widget _buildBookshelfCapsule() {
+    return ListenableBuilder(
+      listenable: BookshelfService(),
+      builder: (context, _) {
+        final inShelf = BookshelfService()
+            .getBookshelvesForItem(widget.book.id, BookshelfItemType.book)
+            .isNotEmpty;
+        return _buildCapsule(
+          icon: inShelf
+              ? Icons.library_books_rounded
+              : Icons.library_add_rounded,
+          label: inShelf ? '已加书架' : '书架',
+          color: inShelf ? const Color(0xFF7C8CFF) : JellyTheme.primary,
+          onTap: () async {
+            final hasReadingProgress =
+                BookReadingProgressService().getProgress(widget.book.id) !=
+                null;
+            final result = await showBookshelfDialog(
+              context,
+              itemId: widget.book.id,
+              type: BookshelfItemType.book,
+              title: '加入书架',
+              meta: jsonEncode(widget.book.toJson()),
+              disabledShelfIds: hasReadingProgress
+                  ? null
+                  : {BookshelfService.presetReading},
+            );
+            if (result != null && mounted) {
+              _toast(result.isEmpty ? '已从所有书架移除' : '已加入 ${result.length} 个书架');
+            }
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildDownloadCapsule(BookDownloadTask? task) {
     final completed = task?.status == BookDownloadStatus.completed;
     if (completed && task != null) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _buildCapsule(
-            icon: Icons.menu_book_rounded,
-            label: '阅读',
-            onTap: () => BookReaderPage.open(context, task),
-          ),
-          const SizedBox(width: 8),
-          IconButton(
-            tooltip: '重新下载',
-            icon: const Icon(Icons.download_for_offline,
-                color: JellyTheme.primary),
-            onPressed: _onDownload,
-          ),
-        ],
+      return _buildCapsule(
+        icon: Icons.menu_book_rounded,
+        label: '阅读',
+        onTap: () => BookReaderPage.open(context, task),
       );
     }
     return _buildCapsule(
@@ -423,31 +475,42 @@ class _BookDetailPageState extends State<BookDetailPage> {
     );
   }
 
+  Widget _buildRedownloadButton() {
+    return IconButton(
+      tooltip: '重新下载',
+      iconSize: 20,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+      icon: const Icon(Icons.download_for_offline, color: JellyTheme.primary),
+      onPressed: _onDownload,
+    );
+  }
+
   Widget _buildSynopsis(String desc, Color titleColor, Color secondaryColor) {
     final likelyLong = desc.length > 80 || desc.contains('\n');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Text('简介',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w700,
-              color: titleColor,
-            )),
+        Text(
+          '简介',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w700,
+            color: titleColor,
+          ),
+        ),
         const SizedBox(height: 8),
         Text(
           desc,
           textAlign: TextAlign.center,
           maxLines: _descExpanded ? null : 4,
-          overflow:
-              _descExpanded ? TextOverflow.clip : TextOverflow.ellipsis,
+          overflow: _descExpanded ? TextOverflow.clip : TextOverflow.ellipsis,
           style: TextStyle(fontSize: 13, height: 1.6, color: secondaryColor),
         ),
         if (likelyLong)
           TextButton(
-            onPressed: () =>
-                setState(() => _descExpanded = !_descExpanded),
+            onPressed: () => setState(() => _descExpanded = !_descExpanded),
             style: TextButton.styleFrom(
               minimumSize: const Size(0, 28),
               padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -484,8 +547,11 @@ class _BookDetailPageState extends State<BookDetailPage> {
               padding: const EdgeInsets.fromLTRB(14, 14, 14, 0),
               child: Row(
                 children: [
-                  Icon(_statusIcon(task.status),
-                      size: 18, color: _statusColor(task.status)),
+                  Icon(
+                    _statusIcon(task.status),
+                    size: 18,
+                    color: _statusColor(task.status),
+                  ),
                   const SizedBox(width: 6),
                   Text(
                     _statusText(task),
@@ -513,9 +579,8 @@ class _BookDetailPageState extends State<BookDetailPage> {
                         ? null
                         : task.progress,
                     minHeight: 6,
-                    backgroundColor:
-                        (isDark ? Colors.white : Colors.black)
-                            .withValues(alpha: 0.1),
+                    backgroundColor: (isDark ? Colors.white : Colors.black)
+                        .withValues(alpha: 0.1),
                     color: JellyTheme.primary,
                   ),
                 ),
@@ -526,9 +591,10 @@ class _BookDetailPageState extends State<BookDetailPage> {
               const SizedBox(height: 6),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 14),
-                child: Text('失败：${task.error}',
-                    style: const TextStyle(
-                        fontSize: 12, color: JellyTheme.error)),
+                child: Text(
+                  '失败：${task.error}',
+                  style: const TextStyle(fontSize: 12, color: JellyTheme.error),
+                ),
               ),
             ],
             const SizedBox(height: 14),
@@ -645,7 +711,9 @@ class _BookDetailPageState extends State<BookDetailPage> {
         padding: EdgeInsets.all(24),
         child: Center(
           child: CircularProgressIndicator(
-              strokeWidth: 2, color: JellyTheme.primary),
+            strokeWidth: 2,
+            color: JellyTheme.primary,
+          ),
         ),
       );
     }
@@ -655,12 +723,14 @@ class _BookDetailPageState extends State<BookDetailPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text('推荐图书',
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
-                color: titleColor,
-              )),
+          Text(
+            '推荐图书',
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              color: titleColor,
+            ),
+          ),
           const SizedBox(height: 10),
           SizedBox(
             height: 165,
@@ -709,8 +779,11 @@ class _BookDetailPageState extends State<BookDetailPage> {
                       width: 92,
                       height: 124,
                       color: isDark ? JellyTheme.cardDark : Colors.grey[200],
-                      child: const Icon(Icons.menu_book_rounded,
-                          size: 28, color: Colors.grey),
+                      child: const Icon(
+                        Icons.menu_book_rounded,
+                        size: 28,
+                        color: Colors.grey,
+                      ),
                     )
                   : CachedNetworkImage(
                       imageUrl: b.cover!,
@@ -720,16 +793,17 @@ class _BookDetailPageState extends State<BookDetailPage> {
                       placeholder: (c, u) => Container(
                         width: 92,
                         height: 124,
-                        color:
-                            isDark ? JellyTheme.cardDark : Colors.grey[200],
+                        color: isDark ? JellyTheme.cardDark : Colors.grey[200],
                       ),
                       errorWidget: (c, u, e) => Container(
                         width: 92,
                         height: 124,
-                        color:
-                            isDark ? JellyTheme.cardDark : Colors.grey[200],
-                        child: const Icon(Icons.broken_image,
-                            size: 24, color: Colors.grey),
+                        color: isDark ? JellyTheme.cardDark : Colors.grey[200],
+                        child: const Icon(
+                          Icons.broken_image,
+                          size: 24,
+                          color: Colors.grey,
+                        ),
                       ),
                     ),
             ),

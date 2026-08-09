@@ -8,7 +8,9 @@ import '../services/book_view_mode.dart';
 import '../services/search_history_service.dart';
 import '../services/zlibrary_service.dart';
 import '../theme/jelly_theme.dart';
+import '../services/settings_service.dart';
 import '../widgets/jelly_book_card.dart';
+import '../widgets/jelly_nav_bar.dart';
 import '../widgets/jelly_search_bar.dart';
 import '../widgets/jelly_segmented_toggle.dart';
 import '../widgets/staggered_entrance.dart';
@@ -27,7 +29,14 @@ class BookSearchPage extends StatefulWidget {
   /// 是否为当前激活的 tab（用于触发结果瀑布入场动画）
   final bool isActive;
 
-  const BookSearchPage({super.key, this.isActive = false});
+  /// 是否显示返回按钮（从"我的"页面入口进入时为 true）
+  final bool showBackButton;
+
+  const BookSearchPage({
+    super.key,
+    this.isActive = false,
+    this.showBackButton = false,
+  });
 
   @override
   State<BookSearchPage> createState() => _BookSearchPageState();
@@ -55,6 +64,8 @@ class _BookSearchPageState extends State<BookSearchPage>
   List<String> _history = [];
   int _searchSession = 0;
   String? _errorMsg; // 搜索异常信息
+  /// z-library 可用性上一状态（仅状态变化才弹通知；null=尚未初始化）
+  bool? _wasUnavailable;
 
   ScrollController get _activeScrollController =>
       _tabController.index == 0 ? _gridScrollController : _listScrollController;
@@ -76,6 +87,7 @@ class _BookSearchPageState extends State<BookSearchPage>
     BookViewMode().addListener(_onViewModeChangedExternal);
     ZlibraryService().addListener(_onServiceChanged);
     BookDownloadService().addListener(_onServiceChanged);
+    _wasUnavailable = ZlibraryService().isUnavailable;
     _loadHistory();
   }
 
@@ -94,7 +106,32 @@ class _BookSearchPageState extends State<BookSearchPage>
   }
 
   void _onServiceChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    final unavailable = ZlibraryService().isUnavailable;
+    final prev = _wasUnavailable;
+    _wasUnavailable = unavailable;
+    // 仅状态变化才弹通知（恢复/受限）
+    if (prev != null && prev != unavailable) {
+      _notifyAvailability(unavailable);
+    }
+    setState(() {});
+  }
+
+  void _notifyAvailability(bool unavailable) {
+    final msg = unavailable
+        ? '所有 z-library 节点不可用，图书功能暂不可用，请等待恢复'
+        : 'z-library 节点已恢复可用';
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(msg),
+          duration: unavailable
+              ? const Duration(seconds: 8)
+              : const Duration(seconds: 4),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
   }
 
   Future<void> _loadHistory() async {
@@ -211,8 +248,14 @@ class _BookSearchPageState extends State<BookSearchPage>
     switch (e.code) {
       case 'no_account':
         return '没有可用的内置账号，请登录自有账号';
+      case 'no_login':
+        return '登录已失效，请重新登录';
+      case 'unavailable':
+        return '图书功能暂不可用，请等待恢复';
+      case 'rate_limited':
+        return '请求过于频繁，请稍后再试';
       default:
-        return '搜索失败，请稍后重试';
+        return e.message;
     }
   }
 
@@ -471,32 +514,63 @@ class _BookSearchPageState extends State<BookSearchPage>
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
-      floatingActionButton: _buildBackToTopButton(),
+      appBar: widget.showBackButton
+          ? AppBar(
+              title: const Text('图书'),
+              actions: [
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Transform.translate(
+                    offset: const Offset(0, 4),
+                    child: _buildAvatar(isDark),
+                  ),
+                ),
+              ],
+            )
+          : null,
+      floatingActionButton: ListenableBuilder(
+        listenable: SettingsService(),
+        builder: (context, _) {
+          final fabOffset = SettingsService().navFloating
+              ? JellyNavBar.floatingTotalHeight + 8
+              : 0.0;
+          return Padding(
+            padding: EdgeInsets.only(bottom: fabOffset),
+            child: _buildBackToTopButton(),
+          );
+        },
+      ),
       body: Column(
         children: [
           SafeArea(
+            top: !widget.showBackButton,
             bottom: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
               child: Column(
                 children: [
-                  // 标题 + 头像
-                  Row(
-                    children: [
-                      Text(
-                        '图书',
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                          color: isDark
-                              ? Colors.white
-                              : JellyTheme.textPrimaryLight,
+                  // 标题 + 头像（AppBar 模式下由 AppBar 承担，头像移入 AppBar.actions）
+                  if (!widget.showBackButton)
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4),
+                          child: Text(
+                            '图书',
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: isDark
+                                  ? Colors.white
+                                  : JellyTheme.textPrimaryLight,
+                            ),
+                          ),
                         ),
-                      ),
-                      const Spacer(),
-                      _buildAvatar(isDark),
-                    ],
-                  ),
+                        const Spacer(),
+                        _buildAvatar(isDark),
+                      ],
+                    ),
                   const SizedBox(height: 8),
                   // 搜索框 + 视图切换
                   Row(
@@ -858,11 +932,11 @@ class _BookSearchPageState extends State<BookSearchPage>
         );
         return MasonryGridView.count(
           controller: _gridScrollController,
-          padding: const EdgeInsets.only(
+          padding: EdgeInsets.only(
             top: 4,
-            left: 20,
-            right: 20,
-            bottom: 12,
+            left: 12,
+            right: 12,
+            bottom: 12 + JellyNavBar.contentBottomAvoid,
           ),
           crossAxisCount: cols,
           mainAxisSpacing: 12,
@@ -905,11 +979,11 @@ class _BookSearchPageState extends State<BookSearchPage>
         );
         return MasonryGridView.count(
           controller: _listScrollController,
-          padding: const EdgeInsets.only(
+          padding: EdgeInsets.only(
             top: 4,
-            left: 20,
-            right: 20,
-            bottom: 12,
+            left: 12,
+            right: 12,
+            bottom: 12 + JellyNavBar.contentBottomAvoid,
           ),
           crossAxisCount: cols,
           mainAxisSpacing: 12,

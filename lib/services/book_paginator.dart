@@ -11,20 +11,45 @@ class BookTypography {
   final double verticalPadding; // 垂直边距（含 HUD 上下留白）
   final String? fontFamily; // 字体；null = 系统默认。度量与渲染共用，确保分页一致
 
+  /// 祖先 DefaultTextStyle.style（取自渲染上下文）。SelectableText/Text 的最终
+  /// 样式 = defaultTextStyle.style.merge(widget.style)，defaultTextStyle 的
+  /// letterSpacing/fontWeight/fontFamily 等字段会**保留**在渲染端；若度量用裸
+  /// paragraphStyle() 则缺这些字段，导致换行/行高不同 -> meas<col（随内容变化、
+  /// 逐行累积）。这里把 inheritedStyle merge 进度量样式，使度量 = 渲染 effective
+  /// TextStyle（颜色除外，不影响布局）。
+  final TextStyle inheritedStyle;
+
+  /// 系统字体缩放器（取自 MediaQuery.textScaler）。渲染由 SelectableText 自动应用，
+  /// 度量须在 TextPainter 传入**同一对象**，保证度量与渲染缩放完全一致。系统
+  /// TextScaler 可能非线性，不可用 scale(1.0) 重建 TextScaler.linear，否则大字号
+  /// 缩放幅度不一致：度量偏小→页底溢出；不传→度量偏大→页底留白。
+  final TextScaler textScaler;
+
+  /// 文本高度行为（首行 ascent / 末行 descent / leading 分布）。度量与渲染须用
+  /// 同一值：SelectableText 内部 EditableText 取 defaultTextStyle.textHeightBehavior，
+  /// 真机该值可能被平台/MediaQuery 注入为非默认；而 TextPainter 默认用引擎默认值。
+  /// 两端不一致 -> 行高偏差 -> 页底横切/留白。此处显式固定，两端共用。
+  final TextHeightBehavior textHeightBehavior;
+
   const BookTypography({
     required this.fontSize,
     required this.lineHeight,
     required this.padding,
     required this.verticalPadding,
     this.fontFamily,
+    this.inheritedStyle = const TextStyle(),
+    this.textScaler = TextScaler.noScaling,
+    this.textHeightBehavior = const TextHeightBehavior(),
   });
 
   /// 段落 / 块之间的纵向间距
   double get blockSpacing => fontSize * 0.55;
 
-  /// 段落度量样式（无颜色）
-  TextStyle paragraphStyle() =>
-      TextStyle(fontSize: fontSize, height: lineHeight, fontFamily: fontFamily);
+  /// 段落度量样式（无颜色）。先 merge inheritedStyle，使度量与渲染 effective
+  /// TextStyle 一致（消除 defaultTextStyle 残留字段差异）。
+  TextStyle paragraphStyle() => inheritedStyle.merge(
+    TextStyle(fontSize: fontSize, height: lineHeight, fontFamily: fontFamily),
+  );
 
   /// 标题字号：level 越小字号越大
   double headingFontSize(int level) {
@@ -34,11 +59,13 @@ class BookTypography {
 
   /// 标题度量样式：level 越小字号越大
   TextStyle headingStyle(int level) {
-    return TextStyle(
-      fontSize: headingFontSize(level),
-      height: lineHeight,
-      fontWeight: FontWeight.w700,
-      fontFamily: fontFamily,
+    return inheritedStyle.merge(
+      TextStyle(
+        fontSize: headingFontSize(level),
+        height: lineHeight,
+        fontWeight: FontWeight.w700,
+        fontFamily: fontFamily,
+      ),
     );
   }
 
@@ -72,7 +99,20 @@ class BookPage {
 
 /// TextPainter 度量分页器：把 flatBlocks 按 [BookTypography] 与视口尺寸切成页。
 /// 段落跨页按行断点切分（getLineBoundary），不切断半行。
+///
+/// 支持增量分页：[stepInto] 每次只处理若干 block 便返回，已完成的页追加进
+/// 调用方传入的列表，未满的当前页状态保留在分页器内部跨调用延续。这样调用方
+/// 可在每批之间 `await Future.delayed(Duration.zero)` 让出 UI 线程，避免大书
+/// 单章同步度量冻结界面（度量仍用 TextPainter + strut，与渲染一致）。
 class BookPaginator {
+  /// sub-pixel 安全余量：度量"放得下"判断时留 0.5px，防止 TextPainter 与渲染
+  /// 间的浮点误差累积到页底溢出（用户表现为"多一点点"）。
+  static const double _kEps = 0.5;
+
+  /// 页底安全余量：度量页高再扣 4px，吸收 TextPainter 度量与真机渲染间的微小
+  /// 偏差，配合渲染端 ClipRect 兜底，避免末行被裁。
+  static const double _kSafety = 4.0;
+
   final List<BookBlock> blocks;
   final double viewportWidth;
   final double viewportHeight;
@@ -81,139 +121,267 @@ class BookPaginator {
   /// imageKey -> 宽/高（阅读器解码图片后回填；未知按 1.5 估算）
   final Map<String, double> imageAspectRatios;
 
-  const BookPaginator({
+  /// 章节首 block 索引集合：这些 block 强制起新页（复刻按章独立分页行为，
+  /// 避免整本增量分页时章标题接在上一章末尾页）
+  final Set<int> chapterStarts;
+
+  BookPaginator({
     required this.blocks,
     required this.viewportWidth,
     required this.viewportHeight,
     required this.typo,
     this.imageAspectRatios = const {},
+    this.chapterStarts = const {},
   });
 
-  List<BookPage> paginate() {
-    final pages = <BookPage>[];
-    final contentWidth = viewportWidth - typo.padding * 2;
-    final pageHeight = viewportHeight - typo.verticalPadding * 2;
-    if (pageHeight <= 0 || contentWidth <= 0 || blocks.isEmpty) return pages;
-
-    var cur = <PageEntry>[];
-    var curFirst = 0;
-    var remaining = pageHeight;
-
-    void commitPage() {
-      if (cur.isNotEmpty) {
-        pages.add(BookPage(firstBlockIndex: curFirst, entries: cur));
-      }
-      cur = <PageEntry>[];
-      remaining = pageHeight;
-    }
-
-    for (var i = 0; i < blocks.length; i++) {
-      final block = blocks[i];
-      if (cur.isEmpty) curFirst = i;
-
-      // 分隔线
-      if (block is DividerBlock) {
-        const h = 16.0;
-        if (remaining < h + typo.blockSpacing) commitPage();
-        cur.add(const PageEntry(DividerBlock()));
-        remaining -= h + typo.blockSpacing;
-        continue;
-      }
-
-      // 图片
-      if (block is ImageBlock) {
-        final ar = imageAspectRatios[block.imageKey] ?? 1.5;
-        var imgH = contentWidth / ar;
-        if (imgH > pageHeight) imgH = pageHeight; // 超高图限制为一页高
-        if (imgH > remaining && cur.isNotEmpty) {
-          commitPage();
-          curFirst = i;
-        }
-        cur.add(PageEntry(block));
-        remaining -= imgH + typo.blockSpacing;
-        continue;
-      }
-
-      // 段落 / 标题：文本度量（strut 强制行高，与渲染一致）
-      final isHeading = block is HeadingBlock;
-      final text = isHeading ? block.text : (block as ParagraphBlock).text;
-      final style = isHeading
-          ? typo.headingStyle(block.level)
-          : typo.paragraphStyle();
-      final strut = isHeading
-          ? typo.headingStrut(block.level)
-          : typo.paragraphStrut;
-
-      final tp = TextPainter(
-        text: TextSpan(text: text, style: style),
-        strutStyle: strut,
-        textDirection: TextDirection.ltr,
-      )..layout(maxWidth: contentWidth);
-      final totalH = tp.height;
-
-      if (totalH <= remaining) {
-        // 整块放得下
-        cur.add(PageEntry(block));
-        remaining -= totalH + typo.blockSpacing;
-        continue;
-      }
-
-      // 放不下：按页切分
-      var rest = text;
-      var firstChunk = true;
-      while (rest.isNotEmpty) {
-        if (!firstChunk || cur.isNotEmpty) {
-          commitPage();
-          curFirst = i;
-        }
-        firstChunk = false;
-        final tp2 = TextPainter(
-          text: TextSpan(text: rest, style: style),
-          strutStyle: strut,
-          textDirection: TextDirection.ltr,
-        )..layout(maxWidth: contentWidth);
-
-        if (tp2.height <= pageHeight) {
-          // 剩余全部放得下
-          cur.add(PageEntry(block, partialText: rest == text ? null : rest));
-          remaining = pageHeight - tp2.height - typo.blockSpacing;
-          rest = '';
-        } else {
-          // 按行切分
-          var fitEnd = _fitOffset(tp2, pageHeight);
-          if (fitEnd <= 0) {
-            // 一行都放不下（视口过小），强制取一行避免死循环
-            final range = tp2.getLineBoundary(const TextPosition(offset: 0));
-            fitEnd = range.end > range.start ? range.end : 1;
-          }
-          cur.add(PageEntry(block, partialText: rest.substring(0, fitEnd)));
-          remaining = 0;
-          rest = rest.substring(fitEnd).trimLeft();
-        }
-      }
-    }
-    commitPage();
-    return pages;
+  /// 断点续分页：从持久化的 partial 状态恢复，继续 stepInto。
+  /// [cur] 为退出时半满页 entries，[remaining] 该页剩余高度，
+  /// [resumeBlockIndex] 下一个待处理 block 索引。[blocks] 须与原次同源
+  /// （即 content.flatBlocks），保证续出的 block identity 与主线程一致。
+  BookPaginator.resume({
+    required this.blocks,
+    required this.viewportWidth,
+    required this.viewportHeight,
+    required this.typo,
+    this.imageAspectRatios = const {},
+    this.chapterStarts = const {},
+    required int resumeBlockIndex,
+    required List<PageEntry> cur,
+    required int curFirst,
+    required double remaining,
+  }) {
+    _i = resumeBlockIndex;
+    _curFirst = curFirst;
+    _remaining = remaining;
+    _cur.addAll(cur);
+    _inited = true; // 跳过 _initOnce，直接用传入的 _remaining/_cur 续
   }
 
-  /// 返回在 [maxHeight] 内能放下的文本字符偏移（行末对齐）
+  // ---- 增量状态 ----
+  late final double _contentWidth = viewportWidth - typo.padding * 2;
+  late final double _pageHeight =
+      viewportHeight - typo.verticalPadding * 2 - _kSafety;
+  final List<PageEntry> _cur = []; // 当前未满页
+  final List<BookPage> _donePages = []; // 已 commit 的完整页（待调用方取走）
+  int _curFirst = 0;
+  double _remaining = 0;
+  int _i = 0; // 下一个待处理 block 索引
+  bool _inited = false;
+  bool _finished = false;
+
+  /// 已处理到的 block 索引（供调用方显示进度 / 反推章节数）
+  int get currentBlockIndex => _i;
+  bool get finished => _finished;
+  int get blockCount => blocks.length;
+
+  /// 当前增量状态快照（partial 缓存续分页用）：半满页 entries / 首块 /
+  /// 剩余高度 / 下一个待处理 block 索引。dispose 写 partial 时捕获此快照。
+  ({List<PageEntry> cur, int curFirst, double remaining, int blockIndex})
+  get snapshot => (
+    cur: List.of(_cur),
+    curFirst: _curFirst,
+    remaining: _remaining,
+    blockIndex: _i,
+  );
+
+  void _initOnce() {
+    if (_inited) return;
+    _inited = true;
+    _remaining = _pageHeight;
+    // 视口非法直接结束，避免无效度量
+    if (_pageHeight <= 0 || _contentWidth <= 0 || blocks.isEmpty) {
+      _finished = true;
+    }
+  }
+
+  void _commitPage() {
+    if (_cur.isNotEmpty) {
+      // 复制一份：_cur 复用清空，已提交页不能受影响
+      _donePages.add(
+        BookPage(firstBlockIndex: _curFirst, entries: List.of(_cur)),
+      );
+    }
+    _cur.clear();
+    _remaining = _pageHeight;
+  }
+
+  /// 处理单个 block（原 paginate 循环体）
+  void _processBlock(int i) {
+    // 章节首 block 强制起新页（与原按章独立分页行为一致）
+    if (_cur.isNotEmpty && chapterStarts.contains(i)) {
+      _commitPage();
+    }
+    final block = blocks[i];
+    if (_cur.isEmpty) _curFirst = i;
+
+    // 分隔线
+    if (block is DividerBlock) {
+      const h = 16.0;
+      if (_remaining < h + typo.blockSpacing) _commitPage();
+      _cur.add(const PageEntry(DividerBlock()));
+      _remaining -= h + typo.blockSpacing;
+      return;
+    }
+
+    // 图片
+    if (block is ImageBlock) {
+      final ar = imageAspectRatios[block.imageKey] ?? block.aspectRatio ?? 1.5;
+      var imgH = _contentWidth / ar;
+      if (imgH > _pageHeight) imgH = _pageHeight; // 超高图限制为一页高
+      if (imgH > _remaining && _cur.isNotEmpty) {
+        _commitPage();
+        _curFirst = i;
+      }
+      _cur.add(PageEntry(block));
+      _remaining -= imgH + typo.blockSpacing;
+      return;
+    }
+
+    // 段落 / 标题：文本度量（strut 强制行高，与渲染一致）
+    final isHeading = block is HeadingBlock;
+    final text = isHeading ? block.text : (block as ParagraphBlock).text;
+    final style = isHeading
+        ? typo.headingStyle(block.level)
+        : typo.paragraphStyle();
+    final strut = isHeading
+        ? typo.headingStrut(block.level)
+        : typo.paragraphStrut;
+
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: style),
+      strutStyle: strut,
+      textScaler: typo.textScaler,
+      textHeightBehavior: typo.textHeightBehavior,
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: _contentWidth);
+    // 标题渲染带 Padding(top:4)（见 _buildEntry），度量须计入，否则标题页累积溢出。
+    final totalH = tp.height + (isHeading ? 4.0 : 0.0);
+
+    if (totalH + _kEps <= _remaining) {
+      // 整块放得下
+      _cur.add(PageEntry(block));
+      _remaining -= totalH + typo.blockSpacing;
+      return;
+    }
+
+    // 放不下当前页剩余：按行切分，先填满当前页剩余（短段落也跨页，消除页底
+    // 留白），再逐页填满。仅当当前页剩余不足一行时才整段移新页（留白 < 一行高）。
+    var rest = text;
+    var firstChunk = true; // rest 是否为该块起始（整段放时 partialText 判空）
+    while (rest.isNotEmpty) {
+      final tp2 = TextPainter(
+        text: TextSpan(text: rest, style: style),
+        strutStyle: strut,
+        textScaler: typo.textScaler,
+        textHeightBehavior: typo.textHeightBehavior,
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: _contentWidth);
+      // 当前页可用高度：当前页已有内容用 _remaining，空页用 _pageHeight
+      final avail = _cur.isNotEmpty ? _remaining : _pageHeight;
+      if (tp2.height + _kEps <= avail) {
+        // 剩余全部放得下当前页
+        _cur.add(PageEntry(block, partialText: firstChunk ? null : rest));
+        _remaining = avail - tp2.height - typo.blockSpacing;
+        rest = '';
+      } else {
+        // 按行切分填满 avail
+        var fitEnd = _fitOffset(tp2, avail);
+        if (fitEnd <= 0) {
+          if (_cur.isNotEmpty) {
+            // 当前页剩余放不下一行：提交当前页（留白 < 一行高），新页继续
+            _commitPage();
+            _curFirst = i;
+            continue;
+          }
+          // 新页也放不下一行（视口过小），强制取一行避免死循环
+          final range = tp2.getLineBoundary(const TextPosition(offset: 0));
+          fitEnd = range.end > range.start ? range.end : 1;
+        }
+        _cur.add(PageEntry(block, partialText: rest.substring(0, fitEnd)));
+        _remaining = 0;
+        rest = rest.substring(fitEnd).trimLeft();
+        _commitPage();
+        _curFirst = i;
+      }
+      firstChunk = false;
+    }
+  }
+
+  /// 增量分页：处理最多 [chunk] 个 block，已 commit 的完整页追加进 [out]。
+  /// 未满的当前页保留在内部跨调用延续；返回是否已处理完全部 block。
+  bool stepInto(List<BookPage> out, {int chunk = 12}) {
+    _initOnce();
+    if (_finished) return true;
+    final end = (_i + chunk).clamp(0, blocks.length);
+    while (_i < end) {
+      _processBlock(_i);
+      _i++;
+    }
+    out.addAll(_donePages);
+    _donePages.clear();
+    if (_i >= blocks.length && !_finished) {
+      _commitPage(); // 提交最后一页
+      out.addAll(_donePages);
+      _donePages.clear();
+      _finished = true;
+    }
+    return _finished;
+  }
+
+  /// 一次性全量分页（等价于循环 stepInto 到完成）。供同步场景。
+  List<BookPage> paginate() {
+    final out = <BookPage>[];
+    while (!stepInto(out, chunk: blocks.length)) {}
+    return out;
+  }
+
+  /// 返回在 [maxHeight] 内能放下的文本字符偏移（行末对齐）。
+  ///
+  /// 用实测 partialText 高度判准（与渲染同源 TextPainter），避免 computeLineMetrics
+  /// 的行高与 forceStrutHeight 实际渲染行高有 sub-pixel 偏差导致多放一行/半行而溢出。
+  /// 二分定位最多可放行数，O(log 行数) 次度量。
   int _fitOffset(TextPainter tp, double maxHeight) {
     final metrics = tp.computeLineMetrics();
+    if (metrics.isEmpty) return 0;
+    // 收集各行末偏移
+    final lineEnds = <int>[];
     var cursor = 0;
-    var used = 0.0;
-    var fitEnd = 0;
-    for (final m in metrics) {
-      if (used + m.height <= maxHeight) {
-        used += m.height;
-        final range = tp.getLineBoundary(TextPosition(offset: cursor));
-        fitEnd = range.end;
-        cursor = range.end;
-        if (range.end <= range.start) break;
+    for (var i = 0; i < metrics.length; i++) {
+      final range = tp.getLineBoundary(TextPosition(offset: cursor));
+      if (range.end <= range.start) break;
+      lineEnds.add(range.end);
+      cursor = range.end;
+    }
+    if (lineEnds.isEmpty) return 0;
+    final full = tp.text!.toPlainText();
+    final spanStyle = (tp.text! as TextSpan).style;
+    final strut = tp.strutStyle;
+    final scaler = tp.textScaler;
+    double heightOf(int end) {
+      final p = TextPainter(
+        text: TextSpan(text: full.substring(0, end), style: spanStyle),
+        strutStyle: strut,
+        textScaler: scaler,
+        textHeightBehavior: typo.textHeightBehavior,
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: _contentWidth);
+      final h = p.height;
+      p.dispose();
+      return h;
+    }
+
+    // 二分找最多能完整放下的行数
+    var lo = 1, hi = lineEnds.length, ans = 0;
+    while (lo <= hi) {
+      final mid = (lo + hi) ~/ 2;
+      if (heightOf(lineEnds[mid - 1]) + _kEps <= maxHeight) {
+        ans = mid;
+        lo = mid + 1;
       } else {
-        break;
+        hi = mid - 1;
       }
     }
-    return fitEnd;
+    return ans == 0 ? 0 : lineEnds[ans - 1];
   }
 
   /// 找包含给定 blockIndex 的页索引（续读恢复用）

@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 /// 应用常量配置
 class AppConstants {
   static const String appName = 'Cmbok';
-  static const String version = '1.0.0';
+  static const String version = '2.0.0';
 
   /// 拷贝漫画 API 地址
   static const String defaultCopyApiUrl = 'https://api.copy3000.com/';
@@ -27,6 +27,9 @@ class AppConstants {
 
   /// GitHub 仓库地址（关于页 + 检查更新）
   static const String githubUrl = 'https://github.com/hlning/cmbok_app';
+
+  /// 「甜甜的小站」博客地址（我的页 + 更新弹窗）
+  static const String blogUrl = 'https://bluemood.xiaomy.net/';
 
   /// GitHub Releases 最新版本接口（检查更新）
   static const String latestReleaseApiUrl =

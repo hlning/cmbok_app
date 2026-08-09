@@ -7,7 +7,9 @@ import '../services/comic_api.dart';
 import '../services/search_history_service.dart';
 import '../services/view_mode.dart';
 import '../theme/jelly_theme.dart';
+import '../services/settings_service.dart';
 import '../widgets/jelly_comic_card.dart';
+import '../widgets/jelly_nav_bar.dart';
 import '../widgets/jelly_comic_list_tile.dart';
 import '../widgets/jelly_search_bar.dart';
 import '../widgets/jelly_segmented_toggle.dart';
@@ -26,14 +28,20 @@ class SearchPage extends StatefulWidget {
   /// 是否为当前激活的 tab（用于触发结果瀑布入场动画）
   final bool isActive;
 
-  const SearchPage({super.key, this.isActive = false});
+  /// 是否显示返回按钮（从"我的"页面入口进入时为 true）
+  final bool showBackButton;
+
+  const SearchPage({
+    super.key,
+    this.isActive = false,
+    this.showBackButton = false,
+  });
 
   @override
   State<SearchPage> createState() => _SearchPageState();
 }
 
-class _SearchPageState extends State<SearchPage>
-    with TickerProviderStateMixin {
+class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
   final ComicApi _api = ComicApi();
   final TextEditingController _searchController = TextEditingController();
 
@@ -245,33 +253,47 @@ class _SearchPageState extends State<SearchPage>
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
-      floatingActionButton: _buildBackToTopButton(),
+      appBar: widget.showBackButton ? AppBar(title: const Text('漫画')) : null,
+      floatingActionButton: ListenableBuilder(
+        listenable: SettingsService(),
+        builder: (context, _) {
+          final fabOffset = SettingsService().navFloating
+              ? JellyNavBar.floatingTotalHeight + 8
+              : 0.0;
+          return Padding(
+            padding: EdgeInsets.only(bottom: fabOffset),
+            child: _buildBackToTopButton(),
+          );
+        },
+      ),
       body: Column(
         children: [
           SafeArea(
+            top: !widget.showBackButton,
             bottom: false,
             child: SizedBox(
-              height: 105,
+              height: widget.showBackButton ? 70 : 105,
               child: Stack(
                 children: [
-                  // 标题：左上角，间距小
-                  Positioned(
-                    top: 6,
-                    left: 16,
-                    child: Text(
-                      '漫画',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        color: isDark
-                            ? Colors.white
-                            : JellyTheme.textPrimaryLight,
+                  // 标题：左上角，间距小（AppBar 模式下由 AppBar 承担）
+                  if (!widget.showBackButton)
+                    Positioned(
+                      top: 6,
+                      left: 16,
+                      child: Text(
+                        '漫画',
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: isDark
+                              ? Colors.white
+                              : JellyTheme.textPrimaryLight,
+                        ),
                       ),
                     ),
-                  ),
                   // 控件组：水平居中，间距大（往下错开，层次感）
                   Positioned(
-                    top: 45,
+                    top: widget.showBackButton ? 6 : 45,
                     left: 12,
                     right: 12,
                     child: Row(
@@ -494,11 +516,11 @@ class _SearchPageState extends State<SearchPage>
         );
         return MasonryGridView.count(
           controller: _gridScrollController,
-          padding: const EdgeInsets.only(
+          padding: EdgeInsets.only(
             top: 4,
-            left: 20,
-            right: 20,
-            bottom: 12,
+            left: 12,
+            right: 12,
+            bottom: 12 + JellyNavBar.contentBottomAvoid,
           ),
           crossAxisCount: cols,
           mainAxisSpacing: 12,
@@ -541,11 +563,11 @@ class _SearchPageState extends State<SearchPage>
         );
         return MasonryGridView.count(
           controller: _listScrollController,
-          padding: const EdgeInsets.only(
+          padding: EdgeInsets.only(
             top: 4,
-            left: 20,
-            right: 20,
-            bottom: 12,
+            left: 12,
+            right: 12,
+            bottom: 12 + JellyNavBar.contentBottomAvoid,
           ),
           crossAxisCount: cols,
           mainAxisSpacing: 12,

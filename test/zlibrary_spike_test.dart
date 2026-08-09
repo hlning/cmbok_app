@@ -21,16 +21,26 @@ void main() {
       debugPrint('[spike] 搜索抛异常: $e');
       rethrow;
     }
-    debugPrint('[spike] 搜索成功: ${result.items.length} 条, total=${result.total}, '
-        'page=${result.currentPage}/${result.totalPages}');
+    debugPrint(
+      '[spike] 搜索成功: ${result.items.length} 条, total=${result.total}, '
+      'page=${result.currentPage}/${result.totalPages}',
+    );
     expect(result.items, isNotEmpty);
 
     final book = result.items.first;
-    debugPrint('[spike] 首本: id=${book.id} hash=${book.hash} title=${book.title} '
-        'author=${book.author} ext=${book.extension} size=${book.filesizeString}');
+    debugPrint(
+      '[spike] 首本: id=${book.id} hash=${book.hash} title=${book.title} '
+      'author=${book.author} ext=${book.extension} size=${book.filesizeString}',
+    );
 
     // 2. 下载链接（仅信息性：内置账号在 z-library 侧可能已达限额，不强制断言）
-    final link = await svc.getDownloadLink(book.id, book.hash);
-    debugPrint('[spike] 下载链接: ${link != null ? "${link.filename} -> ${link.url}" : "null（账号可能已达 z-library 侧限额）"}');
+    try {
+      final link = await svc.getDownloadLink(book.id, book.hash);
+      debugPrint('[spike] 下载链接: ${link.filename} -> ${link.url}');
+    } on ZlibraryException catch (e) {
+      debugPrint(
+        '[spike] 下载链接失败: ${e.code} ${e.message}（账号可能已达 z-library 侧限额）',
+      );
+    }
   }, timeout: const Timeout(Duration(seconds: 90)));
 }

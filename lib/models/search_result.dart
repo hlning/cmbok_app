@@ -14,12 +14,7 @@ class SearchResult<T> {
   }) : hasMore = currentPage < totalPages;
 
   factory SearchResult.empty() {
-    return SearchResult(
-      items: [],
-      total: 0,
-      currentPage: 1,
-      totalPages: 0,
-    );
+    return SearchResult(items: [], total: 0, currentPage: 1, totalPages: 0);
   }
 
   SearchResult<R> map<R>(R Function(T) mapper) {
@@ -33,13 +28,7 @@ class SearchResult<T> {
 }
 
 /// 下载状态
-enum DownloadStatus {
-  queued,
-  downloading,
-  completed,
-  failed,
-  cancelled,
-}
+enum DownloadStatus { queued, downloading, completed, failed, cancelled }
 
 /// 下载任务
 class DownloadTask {

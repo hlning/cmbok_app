@@ -61,6 +61,7 @@ class _BookPageCurlState extends State<BookPageCurl>
 
   Offset? _downPos;
   DateTime? _downTime;
+  double _dragDx = 0; // 水平滑动累计位移，用于判定翻页方向
 
   @override
   void initState() {
@@ -109,6 +110,31 @@ class _BookPageCurlState extends State<BookPageCurl>
       if (widget.canNext) _animateTurn(1);
     } else {
       widget.onTapCenter();
+    }
+  }
+
+  // 左右滑动翻页（仅水平拖动；长按选字、竖向拖动仍归 SelectableText）
+  void _onHorizontalDragStart(DragStartDetails _) {
+    _dragDx = 0;
+  }
+
+  void _onHorizontalDragUpdate(DragUpdateDetails d) {
+    _dragDx += d.delta.dx;
+  }
+
+  void _onHorizontalDragEnd(DragEndDetails d) {
+    if (_phase != _Phase.idle) return; // 翻页中忽略
+    final dx = _dragDx;
+    _dragDx = 0;
+    final v = d.primaryVelocity ?? 0;
+    final w = _width;
+    // 向左滑(dx<0 / v<0)=下一页，向右滑=上一页；位移达 18% 宽度或速度足够即触发
+    final goNext = dx < -w * 0.18 || v < -350;
+    final goPrev = dx > w * 0.18 || v > 350;
+    if (goNext && widget.canNext) {
+      _animateTurn(1);
+    } else if (goPrev && widget.canPrev) {
+      _animateTurn(-1);
     }
   }
 
@@ -178,7 +204,13 @@ class _BookPageCurlState extends State<BookPageCurl>
           behavior: HitTestBehavior.translucent,
           onPointerDown: _onPointerDown,
           onPointerUp: _onPointerUp,
-          child: Stack(fit: StackFit.expand, children: _buildChildren(w, h)),
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragStart: _onHorizontalDragStart,
+            onHorizontalDragUpdate: _onHorizontalDragUpdate,
+            onHorizontalDragEnd: _onHorizontalDragEnd,
+            child: Stack(fit: StackFit.expand, children: _buildChildren(w, h)),
+          ),
         );
       },
     );

@@ -153,7 +153,8 @@ class DownloadSettingsPage extends StatelessWidget {
     }
     // 先直接校验可写；不可写时（多为权限不足）申请存储权限后重试
     if (!await _isWritable(path)) {
-      final fixed = Platform.isAndroid &&
+      final fixed =
+          Platform.isAndroid &&
           await _ensureStoragePermission() &&
           await _isWritable(path);
       if (!context.mounted) return;

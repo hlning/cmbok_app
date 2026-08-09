@@ -1,13 +1,18 @@
+import 'dart:convert';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/comic.dart';
 import '../services/comic_api.dart';
 import '../services/download_service.dart';
+import '../models/bookshelf.dart';
+import '../services/bookshelf_service.dart';
 import '../services/favorites_service.dart';
 import '../services/reading_progress_service.dart';
 import '../theme/jelly_theme.dart';
 import '../widgets/download_chapter_sheet.dart';
+import '../widgets/jelly_bookshelf_dialog.dart';
 import '../widgets/jelly_score_badge.dart';
 import 'reader_page.dart';
 
@@ -21,6 +26,7 @@ void _log(String message) {
 /// 漫画详情页面
 class ComicDetailPage extends StatefulWidget {
   final Comic comic;
+
   /// 封面 Hero 动画 tag（与来源页卡片一致；为空则不启用过渡动画）
   final String? heroTag;
 
@@ -46,6 +52,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
 
   /// 章节默认显示条数
   static const int _defaultVisibleChapters = 20;
+
   /// 触发返回顶部按钮的滚动阈值
   static const double _backToTopThreshold = 300;
 
@@ -143,14 +150,21 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
         // 避免阅读与下载的章节顺序对不上
         for (final g in groups) {
           g.chapters.sort(
-            (a, b) => chapterDisplaySortKey(a.title, a.order)
-                .compareTo(chapterDisplaySortKey(b.title, b.order)),
+            (a, b) => chapterDisplaySortKey(
+              a.title,
+              a.order,
+            ).compareTo(chapterDisplaySortKey(b.title, b.order)),
           );
         }
         _groups = groups;
         _selectedGroupIndex = 0;
         _showAllChapters = false;
       });
+      // 回填书架快照：用所有分组章节之和作为 totalChapters（与下载范围一致），
+      // 供书架判断下载完整度；未收藏或关键字段未变化时内部会跳过
+      FavoritesService().updateComicIfFavorite(
+        _comic.copyWith(totalChapters: _totalChapters),
+      );
     } catch (e) {
       _log('加载失败: $e');
       if (!mounted) return; // 页面已销毁，不更新 UI
@@ -170,13 +184,22 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => ReaderPage(
-          comic: _comic,
-          chapter: chapter,
-          groups: _groups,
-        ),
+        builder: (context) =>
+            ReaderPage(comic: _comic, chapter: chapter, groups: _groups),
       ),
     );
+  }
+
+  /// 续读章节：从阅读进度取上次章节，在 _groups 中查找；无则 null（不显示续读按钮）
+  ComicChapter? get _continueChapter {
+    final rp = ReadingProgressService().getProgress(_comic.pathWord);
+    if (rp == null) return null;
+    for (final g in _groups) {
+      for (final c in g.chapters) {
+        if (c.id == rp.lastChapterId) return c;
+      }
+    }
+    return null;
   }
 
   void _selectGroup(int index) {
@@ -242,7 +265,11 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
             ),
             errorWidget: (c, u, e) => Container(
               color: isDark ? JellyTheme.cardDark : Colors.grey[200],
-              child: const Icon(Icons.broken_image, size: 40, color: Colors.grey),
+              child: const Icon(
+                Icons.broken_image,
+                size: 40,
+                color: Colors.grey,
+              ),
             ),
           ),
         ),
@@ -281,10 +308,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
             const SizedBox(height: 16),
             Text('加载失败: $_error'),
             const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _loadData,
-              child: const Text('重试'),
-            ),
+            ElevatedButton(onPressed: _loadData, child: const Text('重试')),
           ],
         ),
       ),
@@ -324,16 +348,24 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      if (_comic.author != null && _comic.author!.isNotEmpty) ...[
+                      if (_comic.author != null &&
+                          _comic.author!.isNotEmpty) ...[
                         const SizedBox(height: 8),
                         Row(
                           children: [
-                            Icon(Icons.person_outline, size: 15, color: secondaryColor),
+                            Icon(
+                              Icons.person_outline,
+                              size: 15,
+                              color: secondaryColor,
+                            ),
                             const SizedBox(width: 4),
                             Expanded(
                               child: Text(
                                 _comic.author!,
-                                style: TextStyle(fontSize: 13, color: secondaryColor),
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: secondaryColor,
+                                ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -341,7 +373,8 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
                           ],
                         ),
                       ],
-                      if (_comic.status != null && _comic.status!.isNotEmpty) ...[
+                      if (_comic.status != null &&
+                          _comic.status!.isNotEmpty) ...[
                         const SizedBox(height: 8),
                         _buildStatusChip(_comic.status!, isDark),
                       ],
@@ -360,27 +393,30 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
                               .toList(),
                         ),
                       ],
-                      // 收藏 / 下载 胶囊按钮（信息区右下角）
-                      const SizedBox(height: 10),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          _buildFavoriteCapsule(),
-                          const SizedBox(width: 8),
-                          _buildCapsuleButton(
-                            icon: Icons.download_for_offline,
-                            label: '下载',
-                            onTap: _openDownloadSheet,
-                          ),
-                        ],
-                      ),
                     ],
                   ),
                 ),
               ],
             ),
+            // 收藏 / 下载 胶囊按钮（简介上方靠右，避免在元信息窄列中溢出）
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                _buildFavoriteCapsule(),
+                const SizedBox(width: 8),
+                _buildBookshelfCapsule(),
+                const SizedBox(width: 8),
+                _buildCapsuleButton(
+                  icon: Icons.download_for_offline,
+                  label: '下载',
+                  onTap: _openDownloadSheet,
+                ),
+              ],
+            ),
             // 简介（漫画详情）
-            if (_comic.description != null && _comic.description!.isNotEmpty) ...[
+            if (_comic.description != null &&
+                _comic.description!.isNotEmpty) ...[
               const SizedBox(height: 16),
               _buildSynopsis(titleColor, secondaryColor),
             ],
@@ -425,6 +461,30 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
     );
   }
 
+  /// 续读胶囊按钮：跳到上次阅读章节（章节统计行右侧，有阅读进度时显示）
+  Widget _buildContinueCapsule() {
+    return _buildCapsuleButton(
+      icon: Icons.play_arrow_rounded,
+      label: '续读',
+      onTap: () {
+        final rp = ReadingProgressService().getProgress(_comic.pathWord);
+        final chapter = _continueChapter;
+        if (rp == null || chapter == null) return;
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ReaderPage(
+              comic: _comic,
+              chapter: chapter,
+              groups: _groups,
+              initialPage: rp.lastPageIndex,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   /// 收藏胶囊按钮（跟随收藏状态切换图标/文案/颜色）
   Widget _buildFavoriteCapsule() {
     return ListenableBuilder(
@@ -437,9 +497,61 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
           color: fav ? const Color(0xFFFF8B94) : JellyTheme.primary,
           onTap: () {
             FavoritesService().toggle(_comic);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(fav ? '已取消收藏' : '已收藏')),
+            ScaffoldMessenger.of(context)
+              ..hideCurrentSnackBar()
+              ..showSnackBar(
+                SnackBar(
+                  content: Text(fav ? '已取消收藏' : '已收藏'),
+                  duration: const Duration(seconds: 2),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+          },
+        );
+      },
+    );
+  }
+
+  /// 加入书架胶囊按钮
+  Widget _buildBookshelfCapsule() {
+    return ListenableBuilder(
+      listenable: BookshelfService(),
+      builder: (context, _) {
+        final inShelf = BookshelfService()
+            .getBookshelvesForItem(_comic.pathWord, BookshelfItemType.comic)
+            .isNotEmpty;
+        return _buildCapsuleButton(
+          icon: inShelf
+              ? Icons.library_books_rounded
+              : Icons.library_add_rounded,
+          label: inShelf ? '已加书架' : '书架',
+          color: inShelf ? const Color(0xFF7C8CFF) : JellyTheme.primary,
+          onTap: () async {
+            final hasReadingProgress =
+                ReadingProgressService().getProgress(_comic.pathWord) != null;
+            final result = await showBookshelfDialog(
+              context,
+              itemId: _comic.pathWord,
+              type: BookshelfItemType.comic,
+              title: '加入书架',
+              meta: jsonEncode(_comic.toJson()),
+              disabledShelfIds: hasReadingProgress
+                  ? null
+                  : {BookshelfService.presetReading},
             );
+            if (result != null && mounted) {
+              ScaffoldMessenger.of(context)
+                ..hideCurrentSnackBar()
+                ..showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      result.isEmpty ? '已从所有书架移除' : '已加入 ${result.length} 个书架',
+                    ),
+                    duration: const Duration(seconds: 2),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+            }
           },
         );
       },
@@ -449,8 +561,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
   /// 打开下载章节选择弹窗（当前分组）
   void _openDownloadSheet() {
     if (_groups.isEmpty) return;
-    final group =
-        _groups[_selectedGroupIndex.clamp(0, _groups.length - 1)];
+    final group = _groups[_selectedGroupIndex.clamp(0, _groups.length - 1)];
     if (group.chapters.isEmpty) return;
     showModalBottomSheet(
       context: context,
@@ -465,11 +576,13 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
   }
 
   Widget _buildStatusChip(String status, bool isDark) {
-    final ongoing = status.contains('连载') ||
-        status.toLowerCase().contains('ongoing');
+    final ongoing =
+        status.contains('连载') || status.toLowerCase().contains('ongoing');
     final bg = ongoing
         ? JellyTheme.success
-        : (isDark ? Colors.white.withValues(alpha: 0.12) : Colors.black.withValues(alpha: 0.06));
+        : (isDark
+              ? Colors.white.withValues(alpha: 0.12)
+              : Colors.black.withValues(alpha: 0.06));
     final fg = ongoing
         ? Colors.white
         : (isDark ? Colors.white70 : JellyTheme.textSecondary);
@@ -555,8 +668,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
         child: Row(
-          crossAxisAlignment: CrossAxisAlignment.baseline,
-          textBaseline: TextBaseline.alphabetic,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Text(
               '章节',
@@ -574,6 +686,10 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
                 color: JellyTheme.textSecondary,
               ),
             ),
+            if (_continueChapter != null) ...[
+              const SizedBox(width: 12),
+              _buildContinueCapsule(),
+            ],
           ],
         ),
       ),
@@ -611,56 +727,55 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
             crossAxisSpacing: 8,
             mainAxisSpacing: 8,
           ),
-          delegate: SliverChildBuilderDelegate(
-            (context, index) {
-              final chapter = chapters[index];
-              final isDark = Theme.of(context).brightness == Brightness.dark;
-              final downloaded = DownloadService()
-                  .isChapterDownloaded(_comic.pathWord, chapter.id);
-              final isLastRead = lastReadId == chapter.id;
-              return Stack(
-                fit: StackFit.expand,
-                children: [
-                  OutlinedButton(
-                    onPressed: () => _onChapterTap(chapter),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      side: BorderSide(
-                        color: isDark ? Colors.white70 : Colors.black38,
-                      ),
-                    ),
-                    child: Text(
-                      chapter.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11),
+          delegate: SliverChildBuilderDelegate((context, index) {
+            final chapter = chapters[index];
+            final isDark = Theme.of(context).brightness == Brightness.dark;
+            final downloaded = DownloadService().isChapterDownloaded(
+              _comic.pathWord,
+              chapter.id,
+            );
+            final isLastRead = lastReadId == chapter.id;
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                OutlinedButton(
+                  onPressed: () => _onChapterTap(chapter),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    side: BorderSide(
+                      color: isDark ? Colors.white70 : Colors.black38,
                     ),
                   ),
-                  if (isLastRead)
-                    const Positioned(
-                      left: 4,
-                      top: 4,
-                      child: Icon(
-                        Icons.bookmark_rounded,
-                        size: 14,
-                        color: JellyTheme.blue,
-                      ),
+                  child: Text(
+                    chapter.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+                if (isLastRead)
+                  const Positioned(
+                    left: 4,
+                    top: 4,
+                    child: Icon(
+                      Icons.bookmark_rounded,
+                      size: 14,
+                      color: JellyTheme.blue,
                     ),
-                  if (downloaded)
-                    const Positioned(
-                      right: 4,
-                      top: 4,
-                      child: Icon(
-                        Icons.check_circle,
-                        size: 14,
-                        color: JellyTheme.success,
-                      ),
+                  ),
+                if (downloaded)
+                  const Positioned(
+                    right: 4,
+                    top: 4,
+                    child: Icon(
+                      Icons.check_circle,
+                      size: 14,
+                      color: JellyTheme.success,
                     ),
-                ],
-              );
-            },
-            childCount: visibleCount,
-          ),
+                  ),
+              ],
+            );
+          }, childCount: visibleCount),
         ),
       ),
     );
@@ -682,9 +797,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
                   size: 18,
                 ),
                 label: Text(
-                  _showAllChapters
-                      ? '收起'
-                      : '显示全部（共 ${chapters.length} 话）',
+                  _showAllChapters ? '收起' : '显示全部（共 ${chapters.length} 话）',
                 ),
               ),
             ),
@@ -721,8 +834,8 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
                     color: selected
                         ? JellyTheme.primary
                         : (isDark
-                            ? Colors.white.withValues(alpha: 0.06)
-                            : Colors.white),
+                              ? Colors.white.withValues(alpha: 0.06)
+                              : Colors.white),
                     borderRadius: BorderRadius.circular(19),
                     border: Border.all(
                       color: selected
@@ -735,11 +848,12 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
                     '${g.name} (${g.chapters.length})',
                     style: TextStyle(
                       fontSize: 13,
-                      fontWeight:
-                          selected ? FontWeight.w700 : FontWeight.w500,
+                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                       color: selected
                           ? Colors.white
-                          : (isDark ? Colors.white70 : JellyTheme.textSecondary),
+                          : (isDark
+                                ? Colors.white70
+                                : JellyTheme.textSecondary),
                     ),
                   ),
                 ),

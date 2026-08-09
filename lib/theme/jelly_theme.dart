@@ -32,7 +32,10 @@ class JellyTheme {
   static const Color textSecondary = Color(0xFF9CA3AF);
 
   /// 毛玻璃效果滤镜
-  static final ImageFilter glassFilter = ImageFilter.blur(sigmaX: 15, sigmaY: 15);
+  static final ImageFilter glassFilter = ImageFilter.blur(
+    sigmaX: 15,
+    sigmaY: 15,
+  );
 
   /// 毛玻璃容器装饰
   static BoxDecoration glassDecoration({
@@ -86,9 +89,7 @@ class JellyTheme {
       cardTheme: CardThemeData(
         elevation: 8,
         shadowColor: primary.withValues(alpha: 0.15),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         color: cardLight,
       ),
 
@@ -114,7 +115,10 @@ class JellyTheme {
           borderRadius: BorderRadius.circular(16),
           borderSide: BorderSide.none,
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 20,
+          vertical: 16,
+        ),
         hintStyle: const TextStyle(color: textSecondary),
       ),
 
@@ -161,9 +165,7 @@ class JellyTheme {
       cardTheme: CardThemeData(
         elevation: 8,
         shadowColor: Colors.black.withValues(alpha: 0.3),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         color: cardDark,
       ),
 
@@ -189,7 +191,10 @@ class JellyTheme {
           borderRadius: BorderRadius.circular(16),
           borderSide: BorderSide.none,
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 20,
+          vertical: 16,
+        ),
         hintStyle: const TextStyle(color: textSecondary),
       ),
 
@@ -220,17 +225,11 @@ class JellyTheme {
   }
 
   /// 果冻渐变
-  static LinearGradient jellyGradient({
-    Color start = primary,
-    Color? end,
-  }) {
+  static LinearGradient jellyGradient({Color start = primary, Color? end}) {
     return LinearGradient(
       begin: Alignment.topLeft,
       end: Alignment.bottomRight,
-      colors: [
-        start,
-        end ?? start.withValues(alpha: 0.7),
-      ],
+      colors: [start, end ?? start.withValues(alpha: 0.7)],
     );
   }
 }

@@ -8,11 +8,7 @@ class BuiltinAccount {
 }
 
 const List<BuiltinAccount> kBuiltinAccounts = [
-  BuiltinAccount(email: 'nhl0821@163.com', password: '7BmXtdia'),
-  BuiltinAccount(email: '1272814404@qq.com', password: 'wDpvsFu1'),
-  BuiltinAccount(email: '2328893612@qq.com', password: 'zHNJzSE5'),
   BuiltinAccount(email: '1911607739@qq.com', password: 'chnattDJ'),
-  BuiltinAccount(email: '18273183104@163.com', password: 'BzQTuAXv'),
   BuiltinAccount(email: '19201347003@163.com', password: 'roMrzP6w'),
   BuiltinAccount(email: '3923258126@qq.com', password: 'ExpZF37s'),
   BuiltinAccount(email: 't28505858@gmail.com', password: 'kb6zfmnl'),

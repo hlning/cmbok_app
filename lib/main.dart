@@ -5,6 +5,8 @@ import 'package:flutter/rendering.dart';
 import 'pages/home_page.dart';
 import 'services/book_download_service.dart';
 import 'services/book_favorites_service.dart';
+import 'services/peer_transfer_service.dart';
+import 'services/bookshelf_service.dart';
 import 'services/book_reading_progress_service.dart';
 import 'services/book_view_mode.dart';
 import 'services/download_service.dart';
@@ -26,11 +28,13 @@ void main() async {
   await BookViewMode().init();
   await FavoritesService().init();
   await BookFavoritesService().init();
+  await BookshelfService().init();
   await DownloadService().init();
   await ReadingProgressService().init();
   await BookReadingProgressService().init();
   await ZlibraryService().init();
   await BookDownloadService().init();
+  await PeerTransferService().init();
   runApp(const MyApp());
 }
 
@@ -54,19 +58,20 @@ class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin {
   void initState() {
     super.initState();
     _lastDarkMode = SettingsService().isDarkMode;
-    _revealController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 450),
-    )..addStatusListener((status) {
-        if (status == AnimationStatus.completed && mounted) {
-          setState(() {
-            _animating = false;
-            _origin = null;
-            _snapshot?.dispose();
-            _snapshot = null;
-          });
-        }
-      });
+    _revealController =
+        AnimationController(
+          vsync: this,
+          duration: const Duration(milliseconds: 450),
+        )..addStatusListener((status) {
+          if (status == AnimationStatus.completed && mounted) {
+            setState(() {
+              _animating = false;
+              _origin = null;
+              _snapshot?.dispose();
+              _snapshot = null;
+            });
+          }
+        });
     SettingsService().addListener(_onSettingsChanged);
   }
 
@@ -117,8 +122,8 @@ class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin {
     _snapshot?.dispose();
     _snapshot = image;
     // 圆形扩散起点：图标中心（由切换按钮写入），缺省屏幕中心
-    final origin = ThemeSwitch.origin ??
-        Offset(size.width / 2, size.height / 2);
+    final origin =
+        ThemeSwitch.origin ?? Offset(size.width / 2, size.height / 2);
     ThemeSwitch.origin = null; // 消费即清空
     _origin = origin;
     _maxRadius = [
@@ -137,29 +142,25 @@ class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin {
       title: AppConstants.appName,
       theme: JellyTheme.light,
       darkTheme: JellyTheme.dark,
-      themeMode:
-          SettingsService().isDarkMode ? ThemeMode.dark : ThemeMode.light,
+      themeMode: SettingsService().isDarkMode
+          ? ThemeMode.dark
+          : ThemeMode.light,
       home: Stack(
         fit: StackFit.expand,
         children: [
-          RepaintBoundary(
-            key: _boundaryKey,
-            child: const HomePage(),
-          ),
+          RepaintBoundary(key: _boundaryKey, child: const HomePage()),
           if (_animating && _snapshot != null && _origin != null)
             Positioned.fill(
               child: IgnorePointer(
                 child: AnimatedBuilder(
                   animation: _revealController,
                   builder: (context, _) {
-                    final t = Curves.easeInOutCubic
-                        .transform(_revealController.value);
+                    final t = Curves.easeInOutCubic.transform(
+                      _revealController.value,
+                    );
                     return ClipPath(
                       clipper: _CircleRevealClipper(_origin!, t * _maxRadius),
-                      child: RawImage(
-                        image: _snapshot!,
-                        fit: BoxFit.fill,
-                      ),
+                      child: RawImage(image: _snapshot!, fit: BoxFit.fill),
                     );
                   },
                 ),

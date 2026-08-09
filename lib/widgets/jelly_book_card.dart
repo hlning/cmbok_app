@@ -13,6 +13,9 @@ class JellyBookCard extends StatefulWidget {
   final bool isGrid;
   final VoidCallback? onTap;
 
+  /// 长按回调（用于父级进入多选模式；为空则不启用长按）
+  final VoidCallback? onLongPress;
+
   /// 封面 Hero 动画 tag（与详情页一致；为空则不启用共享元素过渡）
   final String? heroTag;
 
@@ -21,6 +24,7 @@ class JellyBookCard extends StatefulWidget {
     required this.book,
     required this.isGrid,
     this.onTap,
+    this.onLongPress,
     this.heroTag,
   });
 
@@ -137,6 +141,13 @@ class _JellyBookCardState extends State<JellyBookCard>
       onTapDown: _onTapDown,
       onTapUp: _onTapUp,
       onTapCancel: _onTapCancel,
+      onLongPress: widget.onLongPress == null
+          ? null
+          : () {
+              setState(() => _isPressed = false);
+              _controller.reverse();
+              widget.onLongPress!();
+            },
       child: AnimatedBuilder(
         animation: _scaleAnimation,
         builder: (context, child) {

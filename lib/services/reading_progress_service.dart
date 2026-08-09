@@ -1,7 +1,10 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../models/bookshelf.dart';
 import '../models/comic.dart';
+import 'bookshelf_service.dart';
+import 'favorites_service.dart';
 
 /// 日志工具
 void _log(String message) {
@@ -16,10 +19,16 @@ class ComicReadingProgress {
   final String lastChapterId;
   final String lastChapterTitle;
   final int lastChapterOrder;
+
   /// 续读页码（从 0 起）
   final int lastPageIndex;
+
+  /// 是否已读完（最后一话的最后一页）；书架归位与启动回填用
+  final bool finished;
+
   /// 已读（至少打开过）的章节 id 集合
   final Set<String> seenChapterIds;
+
   /// 最近更新时间戳（ms）
   final int updatedAt;
 
@@ -28,6 +37,7 @@ class ComicReadingProgress {
     required this.lastChapterTitle,
     required this.lastChapterOrder,
     required this.lastPageIndex,
+    required this.finished,
     required this.seenChapterIds,
     required this.updatedAt,
   });
@@ -45,25 +55,28 @@ class ComicReadingProgress {
       lastChapterTitle: j['lastChapterTitle'] as String? ?? '',
       lastChapterOrder: j['lastChapterOrder'] as int? ?? 0,
       lastPageIndex: j['lastPageIndex'] as int? ?? 0,
+      finished: j['finished'] as bool? ?? false,
       seenChapterIds: seen,
       updatedAt: j['updatedAt'] as int? ?? 0,
     );
   }
 
   Map<String, dynamic> toJson() => {
-        'lastChapterId': lastChapterId,
-        'lastChapterTitle': lastChapterTitle,
-        'lastChapterOrder': lastChapterOrder,
-        'lastPageIndex': lastPageIndex,
-        'seenChapterIds': seenChapterIds.toList(),
-        'updatedAt': updatedAt,
-      };
+    'lastChapterId': lastChapterId,
+    'lastChapterTitle': lastChapterTitle,
+    'lastChapterOrder': lastChapterOrder,
+    'lastPageIndex': lastPageIndex,
+    'finished': finished,
+    'seenChapterIds': seenChapterIds.toList(),
+    'updatedAt': updatedAt,
+  };
 
   ComicReadingProgress copyWith({
     String? lastChapterId,
     String? lastChapterTitle,
     int? lastChapterOrder,
     int? lastPageIndex,
+    bool? finished,
     Set<String>? seenChapterIds,
     int? updatedAt,
   }) {
@@ -72,6 +85,7 @@ class ComicReadingProgress {
       lastChapterTitle: lastChapterTitle ?? this.lastChapterTitle,
       lastChapterOrder: lastChapterOrder ?? this.lastChapterOrder,
       lastPageIndex: lastPageIndex ?? this.lastPageIndex,
+      finished: finished ?? this.finished,
       seenChapterIds: seenChapterIds ?? this.seenChapterIds,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -87,6 +101,10 @@ class ReadingProgressService extends ChangeNotifier {
   factory ReadingProgressService() => _instance;
 
   static const _key = 'reading_progress';
+
+  /// 自动归位"正在读"书架的已读章节阈值：读过这么多不同章节才算"正在读"，
+  /// 避免只瞄几眼（点开一两个章节）就污染正在读书架。
+  static const int readingShelfThreshold = 10;
 
   final Map<String, ComicReadingProgress> _map = {};
 
@@ -109,7 +127,49 @@ class ReadingProgressService extends ChangeNotifier {
     } catch (e) {
       _log('加载阅读进度失败: $e');
     }
+    await _syncReadingStatus();
     notifyListeners();
+  }
+
+  /// 启动回填：按 finished 标志把有阅读记录的漫画归位到"正在读"/"已读完"。
+  /// meta 取自收藏夹，否则从已有书架条目取快照（下载/阅读器带入的）。
+  Future<void> _syncReadingStatus() async {
+    if (_map.isEmpty) {
+      return;
+    }
+    final comics = FavoritesService().comics;
+    for (final pathWord in _map.keys) {
+      final p = _map[pathWord]!;
+      // 读完->已读完；未读完且已读达阈值->正在读；不足阈值不归位（避免瞄几眼就进正在读）
+      final String target;
+      if (p.finished) {
+        target = BookshelfService.presetFinished;
+      } else if (p.seenChapterIds.length >= readingShelfThreshold) {
+        target = BookshelfService.presetReading;
+      } else {
+        continue;
+      }
+      String? meta;
+      try {
+        meta = jsonEncode(
+          comics.firstWhere((c) => c.pathWord == pathWord).toJson(),
+        );
+      } catch (_) {
+        meta = BookshelfService().findItemMeta(
+          pathWord,
+          BookshelfItemType.comic,
+        );
+      }
+      if (meta == null) {
+        continue; // 无快照无法展示，跳过
+      }
+      await BookshelfService().moveBetweenStatusShelves(
+        bookId: pathWord,
+        type: BookshelfItemType.comic,
+        toShelf: target,
+        meta: meta,
+      );
+    }
   }
 
   Future<void> _persist() async {
@@ -124,6 +184,9 @@ class ReadingProgressService extends ChangeNotifier {
       _log('保存阅读进度失败: $e');
     }
   }
+
+  /// 所有有阅读记录的漫画 pathWord（回填"正在读"用）
+  Iterable<String> get pathWords => _map.keys;
 
   /// 获取某本漫画的阅读进度（无则 null）
   ComicReadingProgress? getProgress(String pathWord) => _map[pathWord];
@@ -144,6 +207,7 @@ class ReadingProgressService extends ChangeNotifier {
       lastChapterTitle: chapter.title,
       lastChapterOrder: chapter.order,
       lastPageIndex: pageIndex,
+      finished: existing?.finished ?? false,
       seenChapterIds: seen,
       updatedAt: DateTime.now().millisecondsSinceEpoch,
     );
@@ -159,6 +223,37 @@ class ReadingProgressService extends ChangeNotifier {
     if (p.lastPageIndex == pageIndex) return;
     _map[pathWord] = p.copyWith(lastPageIndex: pageIndex);
     _persist();
+  }
+
+  /// 更新"已读完"标志并按状态归位书架（正在读/已读完）。
+  /// finished 变化时持久化；书架移动幂等（仅变化时写盘+notify）。
+  /// 调用方应自带状态缓存避免频繁调用。
+  Future<void> setFinished(
+    String pathWord,
+    bool finished, {
+    String? meta,
+  }) async {
+    final p = _map[pathWord];
+    if (p != null && p.finished != finished) {
+      _map[pathWord] = p.copyWith(finished: finished);
+      await _persist();
+    }
+    // 读完->已读完；未读完且已读达阈值才归位"正在读"，避免只看几眼就污染正在读书架
+    if (finished) {
+      await BookshelfService().moveBetweenStatusShelves(
+        bookId: pathWord,
+        type: BookshelfItemType.comic,
+        toShelf: BookshelfService.presetFinished,
+        meta: meta,
+      );
+    } else if (p != null && p.seenChapterIds.length >= readingShelfThreshold) {
+      await BookshelfService().moveBetweenStatusShelves(
+        bookId: pathWord,
+        type: BookshelfItemType.comic,
+        toShelf: BookshelfService.presetReading,
+        meta: meta,
+      );
+    }
   }
 
   /// 清除某本漫画的阅读进度（整本删除下载时调用）

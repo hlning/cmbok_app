@@ -54,6 +54,16 @@ class BookFavoritesService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 批量取消收藏（按 id 集合，一次持久化 + 一次通知）
+  Future<void> removeMany(Iterable<String> ids) async {
+    if (ids.isEmpty) return;
+    final idSet = ids.toSet();
+    _books.removeWhere((b) => idSet.contains(b.id));
+    _log('批量取消收藏: ${idSet.length} 本');
+    await _persist();
+    notifyListeners();
+  }
+
   Future<void> _persist() async {
     try {
       final prefs = await SharedPreferences.getInstance();

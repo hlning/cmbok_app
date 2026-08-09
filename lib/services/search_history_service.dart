@@ -22,19 +22,24 @@ class SearchHistoryService {
   }
 
   /// 添加一条搜索记录（去重、置顶、限量）
-  static Future<List<String>> add(String keyword,
-      {String key = _defaultKey}) async {
+  static Future<List<String>> add(
+    String keyword, {
+    String key = _defaultKey,
+  }) async {
     final kw = keyword.trim();
     final cache = _caches.putIfAbsent(key, () => <String>[]);
     if (kw.isEmpty) return List<String>.of(cache);
     _caches[key] = cache.where((e) => e != kw).toList()..insert(0, kw);
-    if (_caches[key]!.length > _max) _caches[key] = _caches[key]!.sublist(0, _max);
+    if (_caches[key]!.length > _max)
+      _caches[key] = _caches[key]!.sublist(0, _max);
     await _persist(key);
     return List<String>.of(_caches[key]!);
   }
 
-  static Future<List<String>> remove(String keyword,
-      {String key = _defaultKey}) async {
+  static Future<List<String>> remove(
+    String keyword, {
+    String key = _defaultKey,
+  }) async {
     final cache = _caches.putIfAbsent(key, () => <String>[]);
     _caches[key] = cache.where((e) => e != keyword).toList();
     await _persist(key);

@@ -53,6 +53,33 @@ class FavoritesService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 批量取消收藏（按 id 集合，一次持久化 + 一次通知）
+  Future<void> removeMany(Iterable<String> ids) async {
+    if (ids.isEmpty) return;
+    final idSet = ids.toSet();
+    _comics.removeWhere((c) => idSet.contains(c.id));
+    _log('批量取消收藏: ${idSet.length} 本');
+    await _persist();
+    notifyListeners();
+  }
+
+  /// 更新书架中同 id 漫画的快照（若已收藏）。
+  /// 详情页加载后回填最新信息（如 totalChapters），供书架判断下载完整度。
+  Future<void> updateComicIfFavorite(Comic comic) async {
+    final idx = _comics.indexWhere((c) => c.id == comic.id);
+    if (idx < 0) return; // 未收藏，不处理
+    final old = _comics[idx];
+    // 关键字段未变则跳过持久化，避免每次进详情页都写盘
+    if (old.totalChapters == comic.totalChapters &&
+        old.description == comic.description &&
+        old.author == comic.author) {
+      return;
+    }
+    _comics[idx] = comic;
+    await _persist();
+    notifyListeners();
+  }
+
   Future<void> _persist() async {
     try {
       final prefs = await SharedPreferences.getInstance();

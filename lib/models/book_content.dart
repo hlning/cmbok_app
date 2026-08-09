@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 /// EPUB / TXT 解析后的统一内容模型。
@@ -10,11 +11,17 @@ class BookContent {
   /// 图片资源：key 为解析时归一化的相对路径，value 为原始字节。
   final Map<String, Uint8List> images;
 
+  /// 懒加载图片字节（PDF 等按需光栅化场景）。null 表示 images 已含全部字节
+  /// （EPUB/MOBI/TXT 解析时一次性载入）。transient：不参与序列化缓存。
+  final Future<Uint8List> Function(String imageKey, double targetWidth)?
+  imageLoader;
+
   const BookContent({
     required this.title,
     this.author,
     required this.chapters,
     this.images = const {},
+    this.imageLoader,
   });
 
   /// 全部章节扁平化为一个 block 序列，章节标题作为 1 级标题块插入。
@@ -22,7 +29,7 @@ class BookContent {
   List<BookBlock> get flatBlocks {
     final out = <BookBlock>[];
     for (final c in chapters) {
-      out.add(HeadingBlock(c.title, 1));
+      if (c.title.isNotEmpty) out.add(HeadingBlock(c.title, 1));
       out.addAll(c.blocks);
     }
     return out;
@@ -34,7 +41,8 @@ class BookContent {
     var idx = 0;
     for (final c in chapters) {
       out.add(idx);
-      idx += 1 + c.blocks.length; // 章节标题块 + 该章 blocks
+      // 章节标题块（空标题不加）+ 该章 blocks
+      idx += (c.title.isNotEmpty ? 1 : 0) + c.blocks.length;
     }
     return out;
   }

@@ -186,7 +186,9 @@ class ComicApi {
     _log('请求 comic2: $pathWord');
     final url = '${baseUrl}api/v3/comic2/$pathWord?platform=1';
     final response = await dio.get(url);
-    _log('comic2 响应: 状态=${response.statusCode}, 类型=${response.data.runtimeType}');
+    _log(
+      'comic2 响应: 状态=${response.statusCode}, 类型=${response.data.runtimeType}',
+    );
     if (response.data is Map) {
       _log('comic2 顶层 keys: ${(response.data as Map).keys.toList()}');
     }
@@ -230,12 +232,15 @@ class ComicApi {
 
   /// 一次请求同时获取漫画详情与章节分组（合并原 getComicDetail + getChapters）
   /// 详情页应使用本方法，避免对 comic2/{pathWord} 发起两次相同请求
-  Future<({Comic comic, List<ChapterGroup> groups})>
-      getComicDetailAndChapters(String pathWord) async {
+  Future<({Comic comic, List<ChapterGroup> groups})> getComicDetailAndChapters(
+    String pathWord,
+  ) async {
     final data = await _fetchComicResults(pathWord);
 
     final comicJson = data['comic'] ?? data;
-    _log('comic 字段来源: ${data.containsKey('comic') ? "data['comic']" : 'fallback(data)'}');
+    _log(
+      'comic 字段来源: ${data.containsKey('comic') ? "data['comic']" : 'fallback(data)'}',
+    );
     if (comicJson is Map) {
       _log('comic keys: ${comicJson.keys.toList()}');
       _log(

@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../models/bookshelf.dart';
+import 'book_favorites_service.dart';
+import 'bookshelf_service.dart';
 
 /// 日志工具
 void _log(String message) {
@@ -82,7 +85,39 @@ class BookReadingProgressService extends ChangeNotifier {
     } catch (e) {
       _log('加载图书阅读进度失败: $e');
     }
+    await _syncReadingStatus();
     notifyListeners();
+  }
+
+  /// 启动回填：按进度把有阅读记录的图书归位到"正在读"/"已读完"。
+  /// meta 取自收藏夹，否则从已有书架条目取快照（本地导入书）。
+  Future<void> _syncReadingStatus() async {
+    if (_map.isEmpty) {
+      return;
+    }
+    final books = BookFavoritesService().books;
+    for (final bookId in _map.keys) {
+      final rp = _map[bookId]!;
+      final finished = rp.pageTotal > 0 && rp.pageIndex + 1 >= rp.pageTotal;
+      final target = finished
+          ? BookshelfService.presetFinished
+          : BookshelfService.presetReading;
+      String? meta;
+      try {
+        meta = jsonEncode(books.firstWhere((b) => b.id == bookId).toJson());
+      } catch (_) {
+        meta = BookshelfService().findItemMeta(bookId, BookshelfItemType.book);
+      }
+      if (meta == null) {
+        continue; // 无快照无法展示，跳过
+      }
+      await BookshelfService().moveBetweenStatusShelves(
+        bookId: bookId,
+        type: BookshelfItemType.book,
+        toShelf: target,
+        meta: meta,
+      );
+    }
   }
 
   Future<void> _persist() async {
@@ -98,8 +133,15 @@ class BookReadingProgressService extends ChangeNotifier {
     }
   }
 
+  /// 所有有阅读记录的图书 bookId（回填"正在读"用）
+  Iterable<String> get bookIds => _map.keys;
+
   /// 获取某本图书的阅读进度（无则 null）
   BookReadingProgress? getProgress(String bookId) => _map[bookId];
+
+  /// 通知监听方刷新进度展示（如退出阅读器后刷新书架进度徽标）。
+  /// recordBlock 故意不 notify，需在合适时机手动触发。
+  void notifyProgressChanged() => notifyListeners();
 
   /// 记录续读 block 索引。仅持久化，不 notifyListeners，
   /// 避免频繁滚动/翻页造成监听方过度重建（图书卡片无需响应阅读进度）。

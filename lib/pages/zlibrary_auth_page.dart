@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' show pi, sin, cos;
 
 import 'package:flutter/material.dart';
+import '../services/search_history_service.dart';
 import '../services/zlibrary_service.dart';
 import '../theme/jelly_theme.dart';
 import '../widgets/staggered_entrance.dart';
@@ -28,6 +29,15 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
   bool _obscureLogin = true;
   String? _loginError;
 
+  // 登录账号历史（仅邮箱，密码不存）
+  static const _historyKey = 'zlibrary_login_history';
+  List<String> _loginHistory = [];
+  final GlobalKey _emailFieldKey = GlobalKey();
+  final LayerLink _emailLayerLink = LayerLink();
+  OverlayEntry? _emailOverlay;
+  double? _dropdownWidth;
+  final _pwdFocus = FocusNode();
+
   // 注册表单
   final _regEmailCtrl = TextEditingController();
   final _regPwdCtrl = TextEditingController();
@@ -50,12 +60,20 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
       vsync: this,
       duration: const Duration(seconds: 12),
     )..repeat();
+    _loadLoginHistory();
+  }
+
+  Future<void> _loadLoginHistory() async {
+    final h = await SearchHistoryService.load(key: _historyKey);
+    if (mounted) setState(() => _loginHistory = h);
   }
 
   @override
   void dispose() {
     _bgCtrl.dispose();
     _countdownTimer?.cancel();
+    _removeEmailOverlay();
+    _pwdFocus.dispose();
     _emailCtrl.dispose();
     _pwdCtrl.dispose();
     _regEmailCtrl.dispose();
@@ -78,10 +96,151 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
     final ok = await ZlibraryService().login(email, pwd);
     if (!mounted) return;
     if (ok) {
-      Navigator.of(context).pop(true);
+      _removeEmailOverlay();
+      await SearchHistoryService.add(email, key: _historyKey);
+      if (mounted) Navigator.of(context).pop(true);
     } else {
       setState(() => _loginError = '登录失败，请检查邮箱与密码');
     }
+  }
+
+  // -------------------- 登录账号历史 --------------------
+
+  /// 切换邮箱下拉历史浮层
+  void _toggleEmailOverlay() {
+    if (_emailOverlay != null) {
+      _removeEmailOverlay();
+      return;
+    }
+    if (_loginHistory.isEmpty) return;
+    final box = _emailFieldKey.currentContext?.findRenderObject() as RenderBox?;
+    _dropdownWidth = box?.size.width;
+    _emailOverlay = OverlayEntry(builder: _buildEmailDropdown);
+    Overlay.of(context).insert(_emailOverlay!);
+  }
+
+  void _removeEmailOverlay() {
+    _emailOverlay?.remove();
+    _emailOverlay = null;
+  }
+
+  /// 选中历史邮箱：填入邮箱框并聚焦密码
+  void _selectHistoryEmail(String email) {
+    _emailCtrl.text = email;
+    _emailCtrl.selection = TextSelection.fromPosition(
+      TextPosition(offset: email.length),
+    );
+    _removeEmailOverlay();
+    FocusScope.of(context).requestFocus(_pwdFocus);
+  }
+
+  Future<void> _removeHistoryEmail(String email) async {
+    final h = await SearchHistoryService.remove(email, key: _historyKey);
+    if (!mounted) return;
+    setState(() => _loginHistory = h);
+    if (_loginHistory.isEmpty) {
+      _removeEmailOverlay();
+    } else {
+      _emailOverlay?.markNeedsBuild();
+    }
+  }
+
+  /// 邮箱框下方的账号历史浮层（CompositedTransformFollower 锚定，滚动跟随）
+  Widget _buildEmailDropdown(BuildContext ctx) {
+    final isDark = Theme.of(ctx).brightness == Brightness.dark;
+    final width = _dropdownWidth ?? (MediaQuery.of(ctx).size.width - 48);
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _removeEmailOverlay,
+          ),
+        ),
+        CompositedTransformFollower(
+          link: _emailLayerLink,
+          targetAnchor: Alignment.bottomLeft,
+          followerAnchor: Alignment.topLeft,
+          offset: const Offset(0, 8),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: width, maxHeight: 260),
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF2D2D4A) : Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: isDark
+                        ? Colors.white.withValues(alpha: 0.08)
+                        : const Color(0xFFE4E6EE),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(
+                        alpha: isDark ? 0.4 : 0.12,
+                      ),
+                      blurRadius: 16,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  shrinkWrap: true,
+                  itemCount: _loginHistory.length,
+                  itemBuilder: (_, i) {
+                    final email = _loginHistory[i];
+                    return InkWell(
+                      onTap: () => _selectHistoryEmail(email),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.person_outline_rounded,
+                              size: 20,
+                              color: JellyTheme.textSecondary,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                email,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: isDark
+                                      ? Colors.white
+                                      : JellyTheme.textPrimaryLight,
+                                ),
+                              ),
+                            ),
+                            GestureDetector(
+                              onTap: () => _removeHistoryEmail(email),
+                              behavior: HitTestBehavior.opaque,
+                              child: Padding(
+                                padding: const EdgeInsets.all(4),
+                                child: Icon(
+                                  Icons.close_rounded,
+                                  size: 16,
+                                  color: JellyTheme.textSecondary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   Future<void> _sendCode() async {
@@ -194,12 +353,12 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
                           // 顶对齐：避免注册切回登录时较矮的登录表单居中导致的「上跳」
                           layoutBuilder: (currentChild, previousChildren) =>
                               Stack(
-                            alignment: Alignment.topCenter,
-                            children: <Widget>[
-                              ...previousChildren,
-                              ?currentChild,
-                            ],
-                          ),
+                                alignment: Alignment.topCenter,
+                                children: <Widget>[
+                                  ...previousChildren,
+                                  ?currentChild,
+                                ],
+                              ),
                           child: _isLogin
                               ? _buildLoginForm(isDark)
                               : _buildRegisterForm(isDark),
@@ -360,7 +519,10 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
   Widget _segLabel(String text, bool selected) {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: () => setState(() => _isLogin = text == '登录'),
+      onTap: () {
+        _removeEmailOverlay();
+        setState(() => _isLogin = text == '登录');
+      },
       child: Center(
         child: Text(
           text,
@@ -385,11 +547,26 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
         const SizedBox(height: 16),
         StaggeredEntrance(
           index: 1,
-          child: _flatField(
-            _emailCtrl,
-            '邮箱',
-            icon: Icons.mail_outline_rounded,
-            keyboardType: TextInputType.emailAddress,
+          child: CompositedTransformTarget(
+            key: _emailFieldKey,
+            link: _emailLayerLink,
+            child: _flatField(
+              _emailCtrl,
+              '邮箱',
+              icon: Icons.mail_outline_rounded,
+              keyboardType: TextInputType.emailAddress,
+              suffix: _loginHistory.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        size: 22,
+                        color: JellyTheme.textSecondary,
+                      ),
+                      tooltip: '历史账号',
+                      onPressed: _toggleEmailOverlay,
+                    )
+                  : null,
+            ),
           ),
         ),
         const SizedBox(height: 12),
@@ -400,6 +577,7 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
             '密码',
             icon: Icons.lock_outline_rounded,
             obscure: _obscureLogin,
+            focusNode: _pwdFocus,
             suffix: IconButton(
               icon: Icon(
                 _obscureLogin
@@ -622,10 +800,12 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
     bool obscure = false,
     Widget? suffix,
     TextInputType? keyboardType,
+    FocusNode? focusNode,
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return TextField(
       controller: ctrl,
+      focusNode: focusNode,
       obscureText: obscure,
       keyboardType: keyboardType,
       decoration: InputDecoration(

@@ -9,6 +9,10 @@ import 'jelly_score_badge.dart';
 class JellyComicCard extends StatefulWidget {
   final Comic comic;
   final VoidCallback onTap;
+
+  /// 长按回调（用于父级进入多选模式；为空则不启用长按）
+  final VoidCallback? onLongPress;
+
   /// 封面 Hero 动画 tag（与详情页一致；为空则不启用共享元素过渡）
   final String? heroTag;
 
@@ -16,6 +20,7 @@ class JellyComicCard extends StatefulWidget {
     super.key,
     required this.comic,
     required this.onTap,
+    this.onLongPress,
     this.heroTag,
   });
 
@@ -78,6 +83,13 @@ class _JellyComicCardState extends State<JellyComicCard>
       onTapDown: _onTapDown,
       onTapUp: _onTapUp,
       onTapCancel: _onTapCancel,
+      onLongPress: widget.onLongPress == null
+          ? null
+          : () {
+              setState(() => _isPressed = false);
+              _controller.reverse();
+              widget.onLongPress!();
+            },
       child: AnimatedBuilder(
         animation: _scaleAnimation,
         builder: (context, child) {

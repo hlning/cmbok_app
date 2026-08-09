@@ -10,10 +10,12 @@ class ImageLoader {
   factory ImageLoader() => _instance;
   ImageLoader._();
 
-  final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 15),
-    receiveTimeout: const Duration(seconds: 30),
-  ));
+  final Dio _dio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 30),
+    ),
+  );
 
   final Map<String, Uint8List> _memoryCache = {};
   final int _maxMemoryCache = 100;

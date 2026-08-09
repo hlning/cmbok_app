@@ -45,8 +45,7 @@ class _DownloadChapterSheetState extends State<DownloadChapterSheet> {
   void _toggleAll() {
     final downloadable = _downloadable;
     setState(() {
-      if (_selected.length == downloadable.length &&
-          downloadable.isNotEmpty) {
+      if (_selected.length == downloadable.length && downloadable.isNotEmpty) {
         _selected.clear();
       } else {
         _selected
@@ -90,8 +89,7 @@ class _DownloadChapterSheetState extends State<DownloadChapterSheet> {
         return Container(
           decoration: BoxDecoration(
             color: isDark ? const Color(0xFF1E1E2A) : Colors.white,
-            borderRadius:
-                const BorderRadius.vertical(top: Radius.circular(20)),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
           ),
           child: Column(
             children: [
@@ -170,8 +168,10 @@ class _DownloadChapterSheetState extends State<DownloadChapterSheet> {
       itemCount: widget.chapters.length,
       itemBuilder: (context, index) {
         final chapter = widget.chapters[index];
-        final downloaded =
-            svc.isChapterDownloaded(widget.comic.pathWord, chapter.id);
+        final downloaded = svc.isChapterDownloaded(
+          widget.comic.pathWord,
+          chapter.id,
+        );
         final selected = _selected.contains(chapter.id);
         return _buildChapterCell(chapter, downloaded, selected, isDark);
       },
@@ -193,15 +193,15 @@ class _DownloadChapterSheetState extends State<DownloadChapterSheet> {
           color: selected
               ? JellyTheme.primary.withValues(alpha: 0.15)
               : (isDark
-                  ? Colors.white.withValues(alpha: 0.05)
-                  : Colors.black.withValues(alpha: 0.03)),
+                    ? Colors.white.withValues(alpha: 0.05)
+                    : Colors.black.withValues(alpha: 0.03)),
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
             color: selected
                 ? JellyTheme.primary
                 : (downloaded
-                    ? Colors.transparent
-                    : (isDark ? Colors.white24 : Colors.black12)),
+                      ? Colors.transparent
+                      : (isDark ? Colors.white24 : Colors.black12)),
           ),
         ),
         child: Row(
@@ -210,14 +210,14 @@ class _DownloadChapterSheetState extends State<DownloadChapterSheet> {
               downloaded
                   ? Icons.check_circle
                   : (selected
-                      ? Icons.check_circle
-                      : Icons.radio_button_unchecked),
+                        ? Icons.check_circle
+                        : Icons.radio_button_unchecked),
               size: 16,
               color: downloaded
                   ? JellyTheme.success
                   : (selected
-                      ? JellyTheme.primary
-                      : (isDark ? Colors.white38 : Colors.black38)),
+                        ? JellyTheme.primary
+                        : (isDark ? Colors.white38 : Colors.black38)),
             ),
             const SizedBox(width: 4),
             Expanded(
@@ -258,8 +258,9 @@ class _DownloadChapterSheetState extends State<DownloadChapterSheet> {
             const Spacer(),
             FilledButton(
               onPressed: _selected.isEmpty ? null : _startDownload,
-              child:
-                  Text(_selected.isEmpty ? '下载' : '下载 ${_selected.length} 话'),
+              child: Text(
+                _selected.isEmpty ? '下载' : '下载 ${_selected.length} 话',
+              ),
             ),
           ],
         ),

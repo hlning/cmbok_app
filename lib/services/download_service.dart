@@ -5,7 +5,9 @@ import 'package:archive/archive.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../models/bookshelf.dart';
 import '../models/comic.dart';
+import 'bookshelf_service.dart';
 import 'comic_api.dart';
 import 'settings_service.dart';
 
@@ -120,18 +122,18 @@ class DownloadTask {
   }
 
   Map<String, dynamic> toJson() => {
-        'comicPathWord': comicPathWord,
-        'comicTitle': comicTitle,
-        'comicCover': comicCover,
-        'chapterId': chapterId,
-        'chapterTitle': chapterTitle,
-        'chapterOrder': chapterOrder,
-        'status': status.name,
-        'totalImages': totalImages,
-        'missingImages': missingImages,
-        'downloadedAt': downloadedAt,
-        'epubPath': epubPath,
-      };
+    'comicPathWord': comicPathWord,
+    'comicTitle': comicTitle,
+    'comicCover': comicCover,
+    'chapterId': chapterId,
+    'chapterTitle': chapterTitle,
+    'chapterOrder': chapterOrder,
+    'status': status.name,
+    'totalImages': totalImages,
+    'missingImages': missingImages,
+    'downloadedAt': downloadedAt,
+    'epubPath': epubPath,
+  };
 }
 
 /// 下载服务（队列 + 两级并发 + 本地持久化）
@@ -167,17 +169,25 @@ class DownloadService extends ChangeNotifier {
   };
 
   /// 进行中（排队/下载中/失败）任务
-  List<DownloadTask> get activeTasks => _tasks.values
-      .where((t) => t.status != DownloadStatus.completed)
-      .toList();
+  List<DownloadTask> get activeTasks =>
+      _tasks.values.where((t) => t.status != DownloadStatus.completed).toList();
 
   /// 已完成任务
-  List<DownloadTask> get completedTasks => _tasks.values
-      .where((t) => t.status == DownloadStatus.completed)
-      .toList();
+  List<DownloadTask> get completedTasks =>
+      _tasks.values.where((t) => t.status == DownloadStatus.completed).toList();
 
   int get _runningCount =>
       _tasks.values.where((t) => t.status == DownloadStatus.downloading).length;
+
+  /// 进度通知节流：大批量下载时每张图完成都 notify 会淹没主线程消息队列
+  /// （"Failed to post message to main thread" 卡死）。仅图片进度更新走节流，
+  /// 状态变更（开始/完成/失败/暂停/取消）仍即时 notify。
+  DateTime? _lastProgressNotify;
+  Timer? _progressNotifyTimer;
+
+  /// 落盘节流：大批量下载时章节频繁完成，避免每章都编码全任务写 prefs。
+  DateTime? _lastPersist;
+  Timer? _persistTrailingTimer;
 
   /// 初始化：从本地恢复已下载记录
   Future<void> init() async {
@@ -202,17 +212,63 @@ class DownloadService extends ChangeNotifier {
     } catch (e) {
       _log('加载下载记录失败: $e');
     }
+    // 应用退出时正在下载(downloading)的任务已被中断，转回排队重新调度；
+    // 整章从头重下（resumeMode=false），避免被杀时残留的半截图片被误判为完整。
+    var hasQueued = false;
+    for (final t in _tasks.values) {
+      if (t.status == DownloadStatus.downloading) {
+        t.status = DownloadStatus.queued;
+        hasQueued = true;
+      } else if (t.status == DownloadStatus.queued) {
+        hasQueued = true;
+      }
+    }
     notifyListeners();
+    if (hasQueued) _schedule();
+    // 补加历史已下载到"已下载的书"书架（幂等）
+    await _syncDownloadedToShelf();
+  }
+
+  /// 启动时把历史已下载漫画补加到"已下载的书"书架（幂等，每本仅一条）
+  Future<void> _syncDownloadedToShelf() async {
+    final seen = <String>{};
+    final items = <BookshelfItem>[];
+    for (final t in _tasks.values) {
+      if (t.status != DownloadStatus.completed) continue;
+      if (!seen.add(t.comicPathWord)) continue;
+      final snapshot = Comic(
+        id: t.comicPathWord,
+        title: t.comicTitle,
+        cover: t.comicCover,
+        pathWord: t.comicPathWord,
+      );
+      items.add(
+        BookshelfItem(
+          bookshelfId: BookshelfService.presetDownloaded,
+          itemId: t.comicPathWord,
+          type: BookshelfItemType.comic,
+          addedAt: DateTime.now().millisecondsSinceEpoch,
+          meta: jsonEncode(snapshot.toJson()),
+        ),
+      );
+    }
+    if (items.isNotEmpty) {
+      await BookshelfService().ensureItemsInShelf(items);
+    }
   }
 
   Future<void> _persist() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final records = _tasks.values
-          .where((t) =>
-              t.status == DownloadStatus.completed ||
-              t.status == DownloadStatus.paused ||
-              t.status == DownloadStatus.failed)
+          .where(
+            (t) =>
+                t.status == DownloadStatus.completed ||
+                t.status == DownloadStatus.paused ||
+                t.status == DownloadStatus.failed ||
+                t.status == DownloadStatus.queued ||
+                t.status == DownloadStatus.downloading,
+          )
           .map((t) => t.toJson())
           .toList();
       await prefs.setString(_recordsKey, jsonEncode(records));
@@ -221,35 +277,99 @@ class DownloadService extends ChangeNotifier {
     }
   }
 
+  /// 节流版进度通知：最多每 150ms 触发一次，并在窗口内排一个尾随通知，
+  /// 保证最终进度必刷新。仅用于图片下载进度更新，避免大批量下载时
+  /// 每张图完成都 notify 淹没主线程消息队列导致卡死。
+  void _notifyProgress() {
+    final now = DateTime.now();
+    if (_lastProgressNotify == null ||
+        now.difference(_lastProgressNotify!) >=
+            const Duration(milliseconds: 150)) {
+      _lastProgressNotify = now;
+      notifyListeners();
+      return;
+    }
+    // 节流窗口内已有尾随通知则不重复排
+    _progressNotifyTimer ??= Timer(const Duration(milliseconds: 150), () {
+      _progressNotifyTimer = null;
+      _lastProgressNotify = DateTime.now();
+      notifyListeners();
+    });
+  }
+
+  /// 节流版落盘：最多每 1s 一次，窗口内排尾随保证最终必落盘。
+  /// 仅用于下载流程中的章节完成/失败；用户主动操作（暂停/取消/删除等）
+  /// 仍直接调 _persist() 即时写入。
+  void _schedulePersist() {
+    final now = DateTime.now();
+    if (_lastPersist == null ||
+        now.difference(_lastPersist!) >= const Duration(seconds: 1)) {
+      _lastPersist = now;
+      _persist();
+      return;
+    }
+    // 节流窗口内已有尾随落盘则不重复排
+    _persistTrailingTimer ??= Timer(const Duration(seconds: 1), () {
+      _persistTrailingTimer = null;
+      _lastPersist = DateTime.now();
+      _persist();
+    });
+  }
+
   /// 章节是否已下载
   bool isChapterDownloaded(String pathWord, String chapterId) {
     return _downloaded[pathWord]?.contains(chapterId) ?? false;
   }
 
+  /// 漫画下载目录名：标题_pathWord。
+  /// 标题在前可读，pathWord 在后保证唯一（防同名漫画目录冲突/误删）；
+  /// 对标题做通用文件名净化（非法字符、超长、尾部点与空白），空标题回退 pathWord。
+  String _comicDirName(String pathWord, String title) {
+    var name = title.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '_').trim();
+    name = name.replaceAll(RegExp(r'[.\s]+$'), '');
+    const maxLen = 80;
+    if (name.length > maxLen) {
+      name = name.substring(0, maxLen).replaceAll(RegExp(r'[.\s]+$'), '');
+    }
+    if (name.isEmpty) return pathWord;
+    return '${name}_$pathWord';
+  }
+
   /// 章节目录（下载/读取用，自动创建）
-  Future<Directory> _chapterDir(String pathWord, String chapterId) async {
+  Future<Directory> _chapterDir(
+    String pathWord,
+    String title,
+    String chapterId,
+  ) async {
     final base = await SettingsService.downloadBaseDir();
-    final dir = Directory('${base.path}/Comics/$pathWord/$chapterId');
+    final dir = Directory(
+      '${base.path}/Comics/${_comicDirName(pathWord, title)}/$chapterId',
+    );
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
     return dir;
   }
 
-  /// 读取本地图片路径列表（阅读页离线读）；未下载或无文件返回空
+  /// 读取本地图片路径列表（阅读页离线读）；未下载或无文件返回空。
+  /// 先查标题命名的新目录，未命中回退旧 pathWord 目录，兼容历史下载。
   Future<List<String>> getLocalImages(
     String pathWord,
+    String title,
     String chapterId,
   ) async {
     if (!isChapterDownloaded(pathWord, chapterId)) return [];
     try {
       final base = await SettingsService.downloadBaseDir();
-      final dir = Directory('${base.path}/Comics/$pathWord/$chapterId');
-      if (!await dir.exists()) return [];
-      final files = dir.listSync().whereType<File>().toList();
-      if (files.isEmpty) return [];
-      files.sort((a, b) => a.path.compareTo(b.path));
-      return files.map((f) => f.path).toList();
+      for (final folder in {_comicDirName(pathWord, title), pathWord}) {
+        final dir = Directory('${base.path}/Comics/$folder/$chapterId');
+        if (!await dir.exists()) continue;
+        final files = dir.listSync().whereType<File>().toList();
+        if (files.isEmpty) continue;
+        files.sort((a, b) => a.path.compareTo(b.path));
+        return files.map((f) => f.path).toList();
+      }
+      return [];
     } catch (e) {
       _log('读取本地图片失败: $e');
       return [];
@@ -282,6 +402,7 @@ class DownloadService extends ChangeNotifier {
     }
     if (added > 0) {
       notifyListeners();
+      _persist(); // 立即持久化排队任务，退出软件不丢
       _schedule();
     }
   }
@@ -325,13 +446,17 @@ class DownloadService extends ChangeNotifier {
       if (urls.isEmpty) {
         task.status = DownloadStatus.failed;
         task.error = '无图片';
-        await _persist();
+        _schedulePersist();
         notifyListeners();
         _log('章节无图片: ${task.chapterTitle}');
         return;
       }
       task.totalImages = urls.length;
-      final dir = await _chapterDir(task.comicPathWord, task.chapterId);
+      final dir = await _chapterDir(
+        task.comicPathWord,
+        task.comicTitle,
+        task.chapterId,
+      );
 
       // 续传：扫描已下载的完整图片并跳过（暂停时 Dio 已删除未写完的分片，
       // 磁盘只剩完整的 NNN.jpg），仅补下缺失项
@@ -353,7 +478,9 @@ class DownloadService extends ChangeNotifier {
           task.downloadedImages = existing.length;
           task.progress = existing.length / urls.length;
           notifyListeners();
-          _log('续传 ${task.chapterTitle}：跳过 ${existing.length}/${urls.length} 张');
+          _log(
+            '续传 ${task.chapterTitle}：跳过 ${existing.length}/${urls.length} 张',
+          );
         }
       }
 
@@ -372,7 +499,7 @@ class DownloadService extends ChangeNotifier {
         // 一张都没下载成功 -> 失败（避免空章节算完成）
         task.status = DownloadStatus.failed;
         task.error = '图片下载失败';
-        await _persist();
+        _schedulePersist();
         notifyListeners();
         _log('章节下载失败（无图片）: ${task.chapterTitle}');
         return;
@@ -382,6 +509,19 @@ class DownloadService extends ChangeNotifier {
       task.downloadedAt = DateTime.now().millisecondsSinceEpoch;
       _downloaded.putIfAbsent(task.comicPathWord, () => <String>{});
       _downloaded[task.comicPathWord]!.add(task.chapterId);
+      // 自动加入"已下载的书"书架（幂等，首次下载完成即加入）
+      final snapshot = Comic(
+        id: task.comicPathWord,
+        title: task.comicTitle,
+        cover: task.comicCover,
+        pathWord: task.comicPathWord,
+      );
+      await BookshelfService().addToBookshelf(
+        BookshelfService.presetDownloaded,
+        task.comicPathWord,
+        BookshelfItemType.comic,
+        meta: jsonEncode(snapshot.toJson()),
+      );
       // 合并 EPUB（若开启）
       if (SettingsService().mergeChapterToEpub) {
         final epub = await _mergeChapterToEpub(task, dir);
@@ -392,17 +532,19 @@ class DownloadService extends ChangeNotifier {
           }
         }
       }
-      await _persist();
+      _schedulePersist();
       notifyListeners();
-      _log('章节下载完成: ${task.chapterTitle} '
-          '(${task.downloadedImages}/${task.totalImages} 张'
-          '${task.missingImages > 0 ? '，缺 ${task.missingImages} 张' : ''})');
+      _log(
+        '章节下载完成: ${task.chapterTitle} '
+        '(${task.downloadedImages}/${task.totalImages} 张'
+        '${task.missingImages > 0 ? '，缺 ${task.missingImages} 张' : ''})',
+      );
     } catch (e) {
       if (!_tasks.containsKey(task.key)) return; // 已取消（移除），静默
       if (task.status == DownloadStatus.paused) return; // 已暂停，静默
       task.status = DownloadStatus.failed;
       task.error = e.toString();
-      await _persist();
+      _schedulePersist();
       notifyListeners();
       _log('章节下载失败: ${task.chapterTitle} - $e');
     }
@@ -458,7 +600,7 @@ class DownloadService extends ChangeNotifier {
             done++;
             task.downloadedImages = alreadyDone + done;
             task.progress = (alreadyDone + done + failedCount) / total;
-            notifyListeners();
+            _notifyProgress();
             startOne();
           })
           .catchError((e) {
@@ -476,7 +618,7 @@ class DownloadService extends ChangeNotifier {
               if (file.existsSync()) file.deleteSync();
             } catch (_) {}
             task.progress = (alreadyDone + done + failedCount) / total;
-            notifyListeners();
+            _notifyProgress();
             startOne();
           });
     }
@@ -524,7 +666,8 @@ class DownloadService extends ChangeNotifier {
   void cancelTask(String key) {
     final task = _tasks[key];
     if (task == null) return;
-    final needPersist = task.status == DownloadStatus.paused ||
+    final needPersist =
+        task.status == DownloadStatus.paused ||
         task.status == DownloadStatus.completed;
     task.cancelToken?.cancel();
     _tasks.remove(key);
@@ -536,7 +679,7 @@ class DownloadService extends ChangeNotifier {
   Future<void> deleteTask(String key) async {
     final task = _tasks[key];
     if (task == null) return;
-    await _deleteFiles(task.comicPathWord, task.chapterId);
+    await _deleteFiles(task.comicPathWord, task.comicTitle, task.chapterId);
     await _deleteEpub(task);
     _downloaded[task.comicPathWord]?.remove(task.chapterId);
     if (_downloaded[task.comicPathWord]?.isEmpty ?? false) {
@@ -555,7 +698,7 @@ class DownloadService extends ChangeNotifier {
         .toList();
     for (final key in keys) {
       final task = _tasks[key]!;
-      await _deleteFiles(task.comicPathWord, task.chapterId);
+      await _deleteFiles(task.comicPathWord, task.comicTitle, task.chapterId);
       await _deleteEpub(task);
       _downloaded[task.comicPathWord]?.remove(task.chapterId);
       _tasks.remove(key);
@@ -685,7 +828,7 @@ class DownloadService extends ChangeNotifier {
     if (keys.isEmpty) return;
     for (final key in keys) {
       final task = _tasks[key]!;
-      await _deleteFiles(task.comicPathWord, task.chapterId);
+      await _deleteFiles(task.comicPathWord, task.comicTitle, task.chapterId);
       await _deleteEpub(task);
       _tasks.remove(key);
     }
@@ -694,34 +837,68 @@ class DownloadService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 批量删除多本漫画的所有下载（文件 + 记录，一次持久化 + 一次通知）
+  Future<void> deleteComics(Iterable<String> pathWords) async {
+    final set = pathWords.toSet();
+    final keys = _tasks.entries
+        .where((e) => set.contains(e.value.comicPathWord))
+        .map((e) => e.key)
+        .toList();
+    if (keys.isEmpty) return;
+    for (final key in keys) {
+      final task = _tasks[key]!;
+      await _deleteFiles(task.comicPathWord, task.comicTitle, task.chapterId);
+      await _deleteEpub(task);
+      _tasks.remove(key);
+    }
+    for (final pw in set) {
+      _downloaded.remove(pw);
+    }
+    await _persist();
+    notifyListeners();
+  }
+
   /// 已下载章节列表（按 chapterOrder 排序，供阅读器构建 groups 离线阅读）
   List<ComicChapter> downloadedChapters(String pathWord) {
     final list = _tasks.values
-        .where((t) =>
-            t.comicPathWord == pathWord &&
-            t.status == DownloadStatus.completed)
-        .map((t) => ComicChapter(
-              id: t.chapterId,
-              title: t.chapterTitle,
-              order: t.chapterOrder,
-              count: t.totalImages,
-              groupId: 'default',
-              groupName: '默认',
-            ))
+        .where(
+          (t) =>
+              t.comicPathWord == pathWord &&
+              t.status == DownloadStatus.completed,
+        )
+        .map(
+          (t) => ComicChapter(
+            id: t.chapterId,
+            title: t.chapterTitle,
+            order: t.chapterOrder,
+            count: t.totalImages,
+            groupId: 'default',
+            groupName: '默认',
+          ),
+        )
         .toList();
     list.sort(
-      (a, b) => chapterDisplaySortKey(a.title, a.order)
-          .compareTo(chapterDisplaySortKey(b.title, b.order)),
+      (a, b) => chapterDisplaySortKey(
+        a.title,
+        a.order,
+      ).compareTo(chapterDisplaySortKey(b.title, b.order)),
     );
     return list;
   }
 
-  Future<void> _deleteFiles(String pathWord, String chapterId) async {
+  Future<void> _deleteFiles(
+    String pathWord,
+    String title,
+    String chapterId,
+  ) async {
     try {
       final base = await SettingsService.downloadBaseDir();
-      final dir = Directory('${base.path}/Comics/$pathWord/$chapterId');
-      if (await dir.exists()) {
-        await dir.delete(recursive: true);
+      // 删新目录与旧 pathWord 目录（兼容历史下载残留）
+      for (final folder in {_comicDirName(pathWord, title), pathWord}) {
+        final dir = Directory('${base.path}/Comics/$folder/$chapterId');
+        if (await dir.exists()) {
+          await dir.delete(recursive: true);
+        }
       }
     } catch (e) {
       _log('删除文件失败: $e');
@@ -773,10 +950,12 @@ class DownloadService extends ChangeNotifier {
       if (images.isEmpty) return null;
       final sortedKeys = images.keys.toList()..sort();
       final pages = sortedKeys.length;
+      final imagePaths = [for (final k in sortedKeys) images[k]!.path];
 
       final base = await SettingsService.downloadBaseDir();
-      final epubDir =
-          Directory('${base.path}/Comics/${task.comicPathWord}/epub');
+      final epubDir = Directory(
+        '${base.path}/Comics/${_comicDirName(task.comicPathWord, task.comicTitle)}/epub',
+      );
       if (!await epubDir.exists()) {
         await epubDir.create(recursive: true);
       }
@@ -796,43 +975,30 @@ class DownloadService extends ChangeNotifier {
           '${epubDir.path}/${safeComic}_${safeChapter}_$shortChapterId.epub';
 
       final bookId = 'cmbok-${task.comicPathWord}-${task.chapterId}';
-      final title =
-          task.chapterTitle.isEmpty ? task.comicTitle : task.chapterTitle;
+      final title = task.chapterTitle.isEmpty
+          ? task.comicTitle
+          : task.chapterTitle;
 
-      final archive = Archive();
-      final mt = utf8.encode('application/epub+zip');
-      archive.addFile(ArchiveFile.noCompress('mimetype', mt.length, mt));
-      archive.addFile(ArchiveFile(
-        'META-INF/container.xml',
-        0,
-        utf8.encode(_epubContainerXml()),
-      ));
-      archive.addFile(ArchiveFile(
-        'OEBPS/content.opf',
-        0,
-        utf8.encode(_epubContentOpf(title, task.comicTitle, bookId, pages)),
-      ));
-      archive.addFile(ArchiveFile(
-        'OEBPS/toc.ncx',
-        0,
-        utf8.encode(_epubTocNcx(title, bookId, pages)),
-      ));
-      for (var i = 0; i < pages; i++) {
-        final n = i + 1;
-        archive.addFile(ArchiveFile(
-          'OEBPS/page-$n.xhtml',
-          0,
-          utf8.encode(_epubPageXhtml(n)),
-        ));
-        final imgBytes = await images[sortedKeys[i]]!.readAsBytes();
-        archive.addFile(ArchiveFile('OEBPS/images/img-$n.jpg', 0, imgBytes));
+      // 预生成 XML（轻量字符串拼接，主线程）；zip 压缩等重活交 worker isolate，
+      // 避免 ZipEncoder().encode 阻塞主线程导致大批量下载卡死。
+      final pageXhtmls = <String>[];
+      for (var i = 1; i <= pages; i++) {
+        pageXhtmls.add(_epubPageXhtml(i));
       }
-
-      final bytes = ZipEncoder().encode(archive);
-      if (bytes == null) return null;
-      await File(epubPath).writeAsBytes(bytes);
+      final epub = await compute(
+        _buildEpubInIsolate,
+        _EpubBuildRequest(
+          imagePaths: imagePaths,
+          epubPath: epubPath,
+          containerXml: _epubContainerXml(),
+          contentOpfXml: _epubContentOpf(title, task.comicTitle, bookId, pages),
+          tocNcxXml: _epubTocNcx(title, bookId, pages),
+          pageXhtmls: pageXhtmls,
+        ),
+      );
+      if (epub == null) return null;
       _log('已合并 EPUB: ${task.chapterTitle} ($pages 页) -> $epubPath');
-      return epubPath;
+      return epub;
     } catch (e) {
       _log('合并 EPUB 失败: ${task.chapterTitle} - $e');
       return null;
@@ -861,27 +1027,38 @@ class DownloadService extends ChangeNotifier {
       '  </rootfiles>\n'
       '</container>';
 
-  String _epubContentOpf(String title, String author, String bookId, int pages) {
+  String _epubContentOpf(
+    String title,
+    String author,
+    String bookId,
+    int pages,
+  ) {
     final b = StringBuffer();
     b.writeln('<?xml version="1.0" encoding="UTF-8"?>');
     b.writeln(
-        '<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="2.0">');
+      '<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="2.0">',
+    );
     b.writeln(
-        '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">');
+      '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">',
+    );
     b.writeln('    <dc:title>${_xmlEscape(title)}</dc:title>');
     b.writeln('    <dc:creator>${_xmlEscape(author)}</dc:creator>');
     b.writeln('    <dc:language>zh</dc:language>');
     b.writeln(
-        '    <dc:identifier id="BookId">urn:uuid:${_xmlEscape(bookId)}</dc:identifier>');
+      '    <dc:identifier id="BookId">urn:uuid:${_xmlEscape(bookId)}</dc:identifier>',
+    );
     b.writeln('  </metadata>');
     b.writeln('  <manifest>');
     b.writeln(
-        '    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>');
+      '    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
+    );
     for (var i = 1; i <= pages; i++) {
       b.writeln(
-          '    <item id="img-$i" href="images/img-$i.jpg" media-type="image/jpeg"/>');
+        '    <item id="img-$i" href="images/img-$i.jpg" media-type="image/jpeg"/>',
+      );
       b.writeln(
-          '    <item id="page-$i" href="page-$i.xhtml" media-type="application/xhtml+xml"/>');
+        '    <item id="page-$i" href="page-$i.xhtml" media-type="application/xhtml+xml"/>',
+      );
     }
     b.writeln('  </manifest>');
     b.writeln('  <spine toc="ncx">');
@@ -897,9 +1074,11 @@ class DownloadService extends ChangeNotifier {
     final b = StringBuffer();
     b.writeln('<?xml version="1.0" encoding="UTF-8"?>');
     b.writeln(
-        '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">');
+      '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">',
+    );
     b.writeln(
-        '  <head><meta name="dtb:uid" content="urn:uuid:${_xmlEscape(bookId)}"/></head>');
+      '  <head><meta name="dtb:uid" content="urn:uuid:${_xmlEscape(bookId)}"/></head>',
+    );
     b.writeln('  <docTitle><text>${_xmlEscape(title)}</text></docTitle>');
     b.writeln('  <navMap>');
     for (var i = 1; i <= pages; i++) {
@@ -917,4 +1096,58 @@ class DownloadService extends ChangeNotifier {
       '<?xml version="1.0" encoding="UTF-8"?>\n'
       '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>第 $i 页</title></head>\n'
       '<body><div style="text-align:center;"><img src="images/img-$i.jpg" alt="第 $i 页"/></div></body></html>';
+}
+
+/// EPUB 构建请求（跨 isolate 传递）：主线程收集图片路径与预生成的 XML，
+/// worker isolate 内读图、压缩、写文件，避免 zip 编码阻塞主线程。
+class _EpubBuildRequest {
+  final List<String> imagePaths;
+  final String epubPath;
+  final String containerXml;
+  final String contentOpfXml;
+  final String tocNcxXml;
+  final List<String> pageXhtmls;
+
+  _EpubBuildRequest({
+    required this.imagePaths,
+    required this.epubPath,
+    required this.containerXml,
+    required this.contentOpfXml,
+    required this.tocNcxXml,
+    required this.pageXhtmls,
+  });
+}
+
+/// worker isolate 内构建 EPUB：读图 + archive + zip 编码 + 写文件。
+/// ZipEncoder().encode 是 CPU 密集操作，移出主 isolate 避免卡死。
+Future<String?> _buildEpubInIsolate(_EpubBuildRequest req) async {
+  try {
+    final archive = Archive();
+    final mt = utf8.encode('application/epub+zip');
+    archive.addFile(ArchiveFile.noCompress('mimetype', mt.length, mt));
+    archive.addFile(
+      ArchiveFile('META-INF/container.xml', 0, utf8.encode(req.containerXml)),
+    );
+    archive.addFile(
+      ArchiveFile('OEBPS/content.opf', 0, utf8.encode(req.contentOpfXml)),
+    );
+    archive.addFile(
+      ArchiveFile('OEBPS/toc.ncx', 0, utf8.encode(req.tocNcxXml)),
+    );
+    for (var i = 0; i < req.imagePaths.length; i++) {
+      final n = i + 1;
+      archive.addFile(
+        ArchiveFile('OEBPS/page-$n.xhtml', 0, utf8.encode(req.pageXhtmls[i])),
+      );
+      final imgBytes = await File(req.imagePaths[i]).readAsBytes();
+      archive.addFile(ArchiveFile('OEBPS/images/img-$n.jpg', 0, imgBytes));
+    }
+    final bytes = ZipEncoder().encode(archive);
+    if (bytes == null) return null;
+    await File(req.epubPath).writeAsBytes(bytes);
+    return req.epubPath;
+  } catch (e) {
+    _log('worker isolate 合并 EPUB 失败: $e');
+    return null;
+  }
 }

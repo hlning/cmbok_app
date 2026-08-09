@@ -1,3 +1,4 @@
+import 'dart:math' show min;
 import 'dart:ui';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -11,8 +12,12 @@ import '../services/favorites_service.dart';
 import '../services/view_mode.dart';
 import '../theme/jelly_theme.dart';
 import '../widgets/jelly_book_card.dart';
+import '../widgets/jelly_select_badge.dart';
+import '../services/settings_service.dart';
+import '../utils/list_pagination.dart';
 import '../widgets/jelly_comic_card.dart';
 import '../widgets/jelly_comic_list_tile.dart';
+import '../widgets/jelly_nav_bar.dart';
 import '../widgets/jelly_search_bar.dart';
 import '../widgets/jelly_segmented_toggle.dart';
 import '../widgets/staggered_entrance.dart';
@@ -24,7 +29,14 @@ class FavoritesPage extends StatefulWidget {
   /// 是否为当前激活的 tab（用于触发收藏卡片入场动画）
   final bool isActive;
 
-  const FavoritesPage({super.key, this.isActive = false});
+  /// 是否显示返回按钮（从"我的"页面入口进入时为 true）
+  final bool showBackButton;
+
+  const FavoritesPage({
+    super.key,
+    this.isActive = false,
+    this.showBackButton = false,
+  });
 
   @override
   State<FavoritesPage> createState() => _FavoritesPageState();
@@ -33,6 +45,10 @@ class FavoritesPage extends StatefulWidget {
 class _FavoritesPageState extends State<FavoritesPage>
     with TickerProviderStateMixin {
   late TabController _tabController;
+
+  // 多选模式
+  bool _isSelecting = false;
+  final Set<String> _selectedIds = {};
 
   // 搜索浮层
   bool _searchVisible = false;
@@ -44,14 +60,26 @@ class _FavoritesPageState extends State<FavoritesPage>
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(_onTabChanged);
     _searchAnim = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 300),
     );
   }
 
+  void _onTabChanged() {
+    // 切换 tab 时退出多选，避免不同类型 id 混乱
+    if (_isSelecting && _tabController.indexIsChanging) {
+      setState(() {
+        _isSelecting = false;
+        _selectedIds.clear();
+      });
+    }
+  }
+
   @override
   void dispose() {
+    _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     _searchAnim.dispose();
     _favSearchController.dispose();
@@ -92,91 +120,237 @@ class _FavoritesPageState extends State<FavoritesPage>
     final isDark = Theme.of(context).brightness == Brightness.dark;
     // tab 总宽 = 屏幕一半：段宽*2 + 左右各5内边距 = 屏幕宽/2
     final tabSegWidth = (MediaQuery.of(context).size.width * 0.5 - 10) / 2;
-    return Scaffold(
-      body: Stack(
-        children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SafeArea(
-                bottom: false,
-                child: SizedBox(
-                  height: 105,
-                  child: Stack(
-                    children: [
-                      // 标题：左上角，间距小
-                      Positioned(
-                        top: 6,
-                        left: 16,
-                        child: Text(
-                          '收藏',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: isDark
-                                ? Colors.white
-                                : JellyTheme.textPrimaryLight,
-                          ),
-                        ),
-                      ),
-                      // 控件组：水平居中，间距大（往下错开，层次感）
-                      Positioned(
-                        top: 45,
-                        left: 12,
-                        right: 12,
-                        child: Row(
-                          children: [
-                            const Spacer(),
-                            AnimatedBuilder(
-                              animation: _tabController.animation!,
-                              builder: (context, _) => JellySegmentedToggle(
-                                index: _tabController.animation!.value,
-                                onChanged: (i) => _tabController.animateTo(i),
-                                segmentWidth: tabSegWidth,
-                                segments: const [
-                                  JellySegmentData(icon: Icons.palette_rounded),
-                                  JellySegmentData(icon: Icons.book_rounded),
-                                ],
+    return PopScope(
+      canPop: !_isSelecting,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _isSelecting) _exitSelection();
+      },
+      child: Scaffold(
+        appBar: widget.showBackButton ? AppBar(title: const Text('收藏')) : null,
+        body: Stack(
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SafeArea(
+                  top: !widget.showBackButton,
+                  bottom: false,
+                  child: SizedBox(
+                    height: widget.showBackButton ? 70 : 105,
+                    child: Stack(
+                      children: [
+                        // 标题：左上角，间距小（AppBar 模式下由 AppBar 承担）
+                        if (!widget.showBackButton)
+                          Positioned(
+                            top: 6,
+                            left: 16,
+                            child: Text(
+                              '收藏',
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
+                                color: isDark
+                                    ? Colors.white
+                                    : JellyTheme.textPrimaryLight,
                               ),
                             ),
-                            const SizedBox(width: 8),
-                            Material(
-                              color: JellyTheme.primary,
-                              shape: const CircleBorder(),
-                              clipBehavior: Clip.antiAlias,
-                              child: InkWell(
-                                onTap: _openSearch,
-                                child: const SizedBox(
-                                  width: 50,
-                                  height: 50,
-                                  child: Icon(
-                                    Icons.search_rounded,
-                                    color: Colors.white,
-                                    size: 22,
+                          ),
+                        // 控件组：水平居中，间距大（往下错开，层次感）
+                        Positioned(
+                          top: widget.showBackButton ? 6 : 45,
+                          left: 12,
+                          right: 12,
+                          child: Row(
+                            children: [
+                              const Spacer(),
+                              AnimatedBuilder(
+                                animation: _tabController.animation!,
+                                builder: (context, _) => JellySegmentedToggle(
+                                  index: _tabController.animation!.value,
+                                  onChanged: (i) => _tabController.animateTo(i),
+                                  segmentWidth: tabSegWidth,
+                                  segments: const [
+                                    JellySegmentData(
+                                      icon: Icons.palette_rounded,
+                                    ),
+                                    JellySegmentData(icon: Icons.book_rounded),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Material(
+                                color: JellyTheme.primary,
+                                shape: const CircleBorder(),
+                                clipBehavior: Clip.antiAlias,
+                                child: InkWell(
+                                  onTap: _openSearch,
+                                  child: const SizedBox(
+                                    width: 50,
+                                    height: 50,
+                                    child: Icon(
+                                      Icons.search_rounded,
+                                      color: Colors.white,
+                                      size: 22,
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                            const Spacer(),
-                          ],
+                              const Spacer(),
+                            ],
+                          ),
                         ),
+                      ],
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: TabBarView(
+                    controller: _tabController,
+                    children: [
+                      _ComicFavoritesTab(
+                        isActive: widget.isActive,
+                        isSelecting: _isSelecting,
+                        selectedIds: _selectedIds,
+                        onSelect: _onSelect,
+                      ),
+                      _BookFavoritesTab(
+                        isSelecting: _isSelecting,
+                        selectedIds: _selectedIds,
+                        onSelect: _onSelect,
                       ),
                     ],
                   ),
                 ),
+              ],
+            ),
+            if (_searchVisible) _buildSearchOverlay(),
+            if (_isSelecting)
+              Positioned(
+                left: 20,
+                right: 20,
+                bottom: SettingsService().navFloating
+                    ? JellyNavBar.floatingTotalHeight + 8
+                    : 16.0,
+                child: Center(child: _buildSelectionBar(isDark)),
               ),
-              Expanded(
-                child: TabBarView(
-                  controller: _tabController,
-                  children: [
-                    _ComicFavoritesTab(isActive: widget.isActive),
-                    const _BookFavoritesTab(),
-                  ],
-                ),
-              ),
-            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ===== 多选模式 =====
+
+  void _onSelect(String id) {
+    setState(() {
+      if (!_isSelecting) {
+        _isSelecting = true;
+        _selectedIds
+          ..clear()
+          ..add(id);
+      } else if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  void _exitSelection() {
+    setState(() {
+      _isSelecting = false;
+      _selectedIds.clear();
+    });
+  }
+
+  void _selectAll() {
+    final isComic = _tabController.index == 0;
+    setState(() {
+      _selectedIds
+        ..clear()
+        ..addAll(
+          isComic
+              ? FavoritesService().comics.map((c) => c.id)
+              : BookFavoritesService().books.map((b) => b.id),
+        );
+    });
+  }
+
+  Future<void> _removeSelected() async {
+    if (_selectedIds.isEmpty) return;
+    final isComic = _tabController.index == 0;
+    final count = _selectedIds.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('取消收藏'),
+        content: Text('确定取消收藏选中的 $count 项吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
           ),
-          if (_searchVisible) _buildSearchOverlay(),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    if (isComic) {
+      await FavoritesService().removeMany(_selectedIds);
+    } else {
+      await BookFavoritesService().removeMany(_selectedIds);
+    }
+    if (mounted) _exitSelection();
+  }
+
+  Widget _buildSelectionBar(bool isDark) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: isDark ? JellyTheme.cardDark : JellyTheme.cardLight,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.5 : 0.12),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '已选 ${_selectedIds.length} 项',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
+            ),
+          ),
+          const SizedBox(width: 12),
+          TextButton(onPressed: _selectAll, child: const Text('全选')),
+          const SizedBox(width: 4),
+          FilledButton(
+            onPressed: _selectedIds.isEmpty ? null : _removeSelected,
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('取消'),
+                SizedBox(width: 4),
+                Icon(Icons.favorite_border_rounded, size: 18),
+              ],
+            ),
+          ),
+          const SizedBox(width: 4),
+          IconButton(
+            onPressed: _exitSelection,
+            icon: const Icon(Icons.close_rounded),
+            tooltip: '退出多选',
+          ),
         ],
       ),
     );
@@ -429,8 +603,16 @@ class _FavoritesPageState extends State<FavoritesPage>
 /// 漫画收藏（跟随搜索页视图模式，列数自适应 + 置顶按钮）
 class _ComicFavoritesTab extends StatefulWidget {
   final bool isActive;
+  final bool isSelecting;
+  final Set<String> selectedIds;
+  final ValueChanged<String> onSelect;
 
-  const _ComicFavoritesTab({this.isActive = false});
+  const _ComicFavoritesTab({
+    this.isActive = false,
+    this.isSelecting = false,
+    this.selectedIds = const {},
+    required this.onSelect,
+  });
 
   @override
   State<_ComicFavoritesTab> createState() => _ComicFavoritesTabState();
@@ -441,6 +623,7 @@ class _ComicFavoritesTabState extends State<_ComicFavoritesTab> {
   bool _showBackToTop = false;
   int _session = 0; // 首次切到收藏 tab 时 +1，触发卡片瀑布入场动画
   bool _hasShownEntrance = false; // 是否已播过首次入场动画
+  int _displayCount = ListPagination.pageSize; // 滚动懒加载：当前渲染条数
 
   @override
   void initState() {
@@ -466,6 +649,15 @@ class _ComicFavoritesTabState extends State<_ComicFavoritesTab> {
 
   void _onScroll() {
     if (!_scrollController.hasClients) return;
+    final total = FavoritesService().comics.length;
+    if (ListPagination.shouldLoadMore(_scrollController) &&
+        _displayCount < total) {
+      setState(
+        () =>
+            _displayCount = min(_displayCount + ListPagination.pageSize, total),
+      );
+      return;
+    }
     final show = _scrollController.position.pixels > 300;
     if (show != _showBackToTop) setState(() => _showBackToTop = show);
   }
@@ -503,78 +695,113 @@ class _ComicFavoritesTabState extends State<_ComicFavoritesTab> {
             ),
           );
         }
-        return Stack(
+        return Column(
           children: [
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final cols = _adaptiveCols(
-                  constraints.maxWidth,
-                  min: isGrid ? 2 : 1,
-                  target: isGrid ? 170 : 360,
-                  max: isGrid ? 6 : 4,
-                );
-                return MasonryGridView.count(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.only(
-                    top: 4,
-                    left: 20,
-                    right: 20,
-                    bottom: 12,
-                  ),
-                  crossAxisCount: cols,
-                  mainAxisSpacing: 12,
-                  crossAxisSpacing: 12,
-                  itemCount: comics.length,
-                  itemBuilder: (context, index) {
-                    final comic = comics[index];
-                    return StaggeredEntrance(
-                      key: ValueKey('${_session}_${comic.id}'),
-                      index: index,
-                      child: isGrid
-                          ? JellyComicCard(
-                              comic: comic,
-                              heroTag: comicCoverHeroTag('fav', comic),
-                              onTap: () => _openDetail(context, comic),
-                            )
-                          : JellyComicListTile(
-                              comic: comic,
-                              heroTag: comicCoverHeroTag('fav', comic),
-                              onTap: () => _openDetail(context, comic),
-                            ),
-                    );
-                  },
-                );
-              },
-            ),
-            // 置顶按钮
-            if (_showBackToTop)
-              Positioned(
-                bottom: 16,
-                right: 16,
-                child: AnimatedScale(
-                  scale: _showBackToTop ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeOut,
-                  child: Material(
-                    color: JellyTheme.primary,
-                    shape: const CircleBorder(),
-                    elevation: 4,
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: _scrollToTop,
-                      child: const SizedBox(
-                        width: 44,
-                        height: 44,
-                        child: Icon(
-                          Icons.arrow_upward_rounded,
-                          color: Colors.white,
-                          size: 22,
+            ListPaginationCountBar(total: comics.length, unit: '本'),
+            Expanded(
+              child: Stack(
+                children: [
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final cols = _adaptiveCols(
+                        constraints.maxWidth,
+                        min: isGrid ? 2 : 1,
+                        target: isGrid ? 170 : 360,
+                        max: isGrid ? 6 : 4,
+                      );
+                      return MasonryGridView.count(
+                        controller: _scrollController,
+                        padding: EdgeInsets.only(
+                          top: 4,
+                          left: 12,
+                          right: 12,
+                          bottom: 12 + JellyNavBar.contentBottomAvoid,
                         ),
-                      ),
-                    ),
+                        crossAxisCount: cols,
+                        mainAxisSpacing: 12,
+                        crossAxisSpacing: 12,
+                        itemCount: min(comics.length, _displayCount),
+                        itemBuilder: (context, index) {
+                          final comic = comics[index];
+                          final selected = widget.selectedIds.contains(
+                            comic.id,
+                          );
+                          final card = isGrid
+                              ? JellyComicCard(
+                                  comic: comic,
+                                  heroTag: comicCoverHeroTag('fav', comic),
+                                  onTap: widget.isSelecting
+                                      ? () => widget.onSelect(comic.id)
+                                      : () => _openDetail(context, comic),
+                                  onLongPress: () => widget.onSelect(comic.id),
+                                )
+                              : JellyComicListTile(
+                                  comic: comic,
+                                  heroTag: comicCoverHeroTag('fav', comic),
+                                  onTap: widget.isSelecting
+                                      ? () => widget.onSelect(comic.id)
+                                      : () => _openDetail(context, comic),
+                                  onLongPress: () => widget.onSelect(comic.id),
+                                );
+                          return StaggeredEntrance(
+                            key: ValueKey('${_session}_${comic.id}'),
+                            index: index,
+                            child: Stack(
+                              children: [
+                                card,
+                                if (widget.isSelecting)
+                                  Positioned(
+                                    top: 4,
+                                    right: 4,
+                                    child: JellySelectBadge(selected: selected),
+                                  ),
+                              ],
+                            ),
+                          );
+                        },
+                      );
+                    },
                   ),
-                ),
+                  // 置顶按钮
+                  if (_showBackToTop && !widget.isSelecting)
+                    ListenableBuilder(
+                      listenable: SettingsService(),
+                      builder: (context, _) {
+                        final bottomOffset = SettingsService().navFloating
+                            ? JellyNavBar.floatingTotalHeight + 8
+                            : 16.0;
+                        return Positioned(
+                          bottom: bottomOffset,
+                          right: 16,
+                          child: AnimatedScale(
+                            scale: _showBackToTop ? 1.0 : 0.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeOut,
+                            child: Material(
+                              color: JellyTheme.primary,
+                              shape: const CircleBorder(),
+                              elevation: 4,
+                              clipBehavior: Clip.antiAlias,
+                              child: InkWell(
+                                onTap: _scrollToTop,
+                                child: const SizedBox(
+                                  width: 44,
+                                  height: 44,
+                                  child: Icon(
+                                    Icons.arrow_upward_rounded,
+                                    color: Colors.white,
+                                    size: 22,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                ],
               ),
+            ),
           ],
         );
       },
@@ -609,7 +836,15 @@ class _ComicFavoritesTabState extends State<_ComicFavoritesTab> {
 
 /// 图书收藏（跟随搜索页视图模式，列数自适应 + 置顶按钮）
 class _BookFavoritesTab extends StatefulWidget {
-  const _BookFavoritesTab();
+  final bool isSelecting;
+  final Set<String> selectedIds;
+  final ValueChanged<String> onSelect;
+
+  const _BookFavoritesTab({
+    this.isSelecting = false,
+    this.selectedIds = const {},
+    required this.onSelect,
+  });
 
   @override
   State<_BookFavoritesTab> createState() => _BookFavoritesTabState();
@@ -618,6 +853,7 @@ class _BookFavoritesTab extends StatefulWidget {
 class _BookFavoritesTabState extends State<_BookFavoritesTab> {
   final ScrollController _scrollController = ScrollController();
   bool _showBackToTop = false;
+  int _displayCount = ListPagination.pageSize; // 滚动懒加载：当前渲染条数
 
   @override
   void initState() {
@@ -633,6 +869,15 @@ class _BookFavoritesTabState extends State<_BookFavoritesTab> {
 
   void _onScroll() {
     if (!_scrollController.hasClients) return;
+    final total = BookFavoritesService().books.length;
+    if (ListPagination.shouldLoadMore(_scrollController) &&
+        _displayCount < total) {
+      setState(
+        () =>
+            _displayCount = min(_displayCount + ListPagination.pageSize, total),
+      );
+      return;
+    }
     final show = _scrollController.position.pixels > 300;
     if (show != _showBackToTop) setState(() => _showBackToTop = show);
   }
@@ -680,72 +925,102 @@ class _BookFavoritesTabState extends State<_BookFavoritesTab> {
             ),
           );
         }
-        return Stack(
+        return Column(
           children: [
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final cols = _adaptiveCols(
-                  constraints.maxWidth,
-                  min: isGrid ? 2 : 1,
-                  target: isGrid ? 170 : 360,
-                  max: isGrid ? 6 : 4,
-                );
-                return MasonryGridView.count(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.only(
-                    top: 4,
-                    left: 20,
-                    right: 20,
-                    bottom: 12,
-                  ),
-                  crossAxisCount: cols,
-                  mainAxisSpacing: 12,
-                  crossAxisSpacing: 12,
-                  itemCount: books.length,
-                  itemBuilder: (context, index) {
-                    final book = books[index];
-                    return StaggeredEntrance(
-                      key: ValueKey('book_${book.id}'),
-                      index: index,
-                      child: JellyBookCard(
-                        book: book,
-                        isGrid: isGrid,
-                        heroTag: bookCoverHeroTag('fav', book),
-                        onTap: () => _openDetail(book),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-            if (_showBackToTop)
-              Positioned(
-                bottom: 16,
-                right: 16,
-                child: AnimatedScale(
-                  scale: _showBackToTop ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeOut,
-                  child: Material(
-                    color: JellyTheme.primary,
-                    shape: const CircleBorder(),
-                    elevation: 4,
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: _scrollToTop,
-                      child: const SizedBox(
-                        width: 44,
-                        height: 44,
-                        child: Icon(
-                          Icons.arrow_upward_rounded,
-                          color: Colors.white,
-                          size: 22,
+            ListPaginationCountBar(total: books.length, unit: '本'),
+            Expanded(
+              child: Stack(
+                children: [
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final cols = _adaptiveCols(
+                        constraints.maxWidth,
+                        min: isGrid ? 2 : 1,
+                        target: isGrid ? 170 : 360,
+                        max: isGrid ? 6 : 4,
+                      );
+                      return MasonryGridView.count(
+                        controller: _scrollController,
+                        padding: EdgeInsets.only(
+                          top: 4,
+                          left: 12,
+                          right: 12,
+                          bottom: 12 + JellyNavBar.contentBottomAvoid,
                         ),
-                      ),
-                    ),
+                        crossAxisCount: cols,
+                        mainAxisSpacing: 12,
+                        crossAxisSpacing: 12,
+                        itemCount: min(books.length, _displayCount),
+                        itemBuilder: (context, index) {
+                          final book = books[index];
+                          final selected = widget.selectedIds.contains(book.id);
+                          final card = JellyBookCard(
+                            book: book,
+                            isGrid: isGrid,
+                            heroTag: bookCoverHeroTag('fav', book),
+                            onTap: widget.isSelecting
+                                ? () => widget.onSelect(book.id)
+                                : () => _openDetail(book),
+                            onLongPress: () => widget.onSelect(book.id),
+                          );
+                          return StaggeredEntrance(
+                            key: ValueKey('book_${book.id}'),
+                            index: index,
+                            child: Stack(
+                              children: [
+                                card,
+                                if (widget.isSelecting)
+                                  Positioned(
+                                    top: 4,
+                                    right: 4,
+                                    child: JellySelectBadge(selected: selected),
+                                  ),
+                              ],
+                            ),
+                          );
+                        },
+                      );
+                    },
                   ),
-                ),
+                  if (_showBackToTop && !widget.isSelecting)
+                    ListenableBuilder(
+                      listenable: SettingsService(),
+                      builder: (context, _) {
+                        final bottomOffset = SettingsService().navFloating
+                            ? JellyNavBar.floatingTotalHeight + 8
+                            : 16.0;
+                        return Positioned(
+                          bottom: bottomOffset,
+                          right: 16,
+                          child: AnimatedScale(
+                            scale: _showBackToTop ? 1.0 : 0.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeOut,
+                            child: Material(
+                              color: JellyTheme.primary,
+                              shape: const CircleBorder(),
+                              elevation: 4,
+                              clipBehavior: Clip.antiAlias,
+                              child: InkWell(
+                                onTap: _scrollToTop,
+                                child: const SizedBox(
+                                  width: 44,
+                                  height: 44,
+                                  child: Icon(
+                                    Icons.arrow_upward_rounded,
+                                    color: Colors.white,
+                                    size: 22,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                ],
               ),
+            ),
           ],
         );
       },

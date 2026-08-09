@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+version: 2.0.0+2
 
 environment:
   sdk: ^3.10.0
@@ -44,10 +44,22 @@ dependencies:
   flutter_staggered_grid_view: ^0.7.0
   scrollable_positioned_list: ^0.3.8
   archive: ^3.6.1
+  # html：HTML4 容错解析，MOBI 转出的 XHTML 非合法 XML 时回退（纯 Dart）
+  html: ^0.15.4
   xml: ^6.5.0
   file_picker: ^8.1.4
   url_launcher: ^6.3.0
   share_plus: ^10.0.0
+  # kindle_unpack (GPL v3)：MOBI/AZW/AZW3 -> EPUB，纯 Dart，复用现有 EPUB 解析管线。
+  # 本地 path 依赖：vendor 自 0.1.1 并打补丁（trailing_data 容错，修复空末条记录致
+  # multibyte-overlap HeaderException 整书打不开），见 packages/kindle_unpack/。
+  kindle_unpack:
+    path: packages/kindle_unpack
+  # flutter_pdfview：系统原生 PDF 渲染（Android PdfRenderer / iOS PDFKit），
+  # 无 PDFium、无构建时下载（pdfrx 会构建时从 GitHub 拉 PDFium，国内网络不可靠，故弃用）
+  flutter_pdfview: ^1.4.5
+  bonsoir: ^6.0.3
+  flutter_foreground_task: ^10.0.0
 
 dev_dependencies:
   flutter_test:

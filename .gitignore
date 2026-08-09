@@ -31,6 +31,12 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# 打包产物（分 ABI release APK 等），不入库
+/dist/
+
+# vendored path 依赖（packages/*）的自动产物，不独立版本化
+/packages/*/pubspec.lock
+
 # Symbolication related
 app.*.symbols
 

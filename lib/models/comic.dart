@@ -131,7 +131,8 @@ class Comic {
       cover: safeString(json['cover']) ?? '',
       author: safeAuthor(json['author']),
       alias: safeAlias(json['alias']),
-      description: safeString(json['description']) ??
+      description:
+          safeString(json['description']) ??
           safeString(json['synopsis']) ??
           safeString(json['brief']),
       status: safeStatus(json['status']),
@@ -144,7 +145,9 @@ class Comic {
           safeString(json['id']) ??
           '',
       totalChapters:
-          safeInt(json['total_chapters']) ?? safeInt(json['chapterCount']),
+          safeInt(json['total_chapters']) ??
+          safeInt(json['chapterCount']) ??
+          safeInt(json['totalChapters']),
       updateTime: (json['update_time'] ?? json['datetime_updated']) != null
           ? DateTime.tryParse(
               (json['update_time'] ?? json['datetime_updated']).toString(),
