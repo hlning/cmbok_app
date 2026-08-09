@@ -168,6 +168,7 @@ class _ReaderPageState extends State<ReaderPage> {
             widget.comic.pathWord,
             _currentChapter,
             _currentIndex,
+            _allChapters.indexWhere((c) => c.id == _currentChapter.id),
           );
           // 按进度归位"正在读"/"已读完"书架
           _applyReadingStatus();
@@ -440,8 +441,9 @@ class _ReaderPageState extends State<ReaderPage> {
     final target = finished
         ? BookshelfService.presetFinished
         : BookshelfService.presetReading;
-    if (!finished) {
-      // 未读完：仅已读达阈值才归位"正在读"，否则不归位也不缓存
+    if (!finished && !_useLocal) {
+      // 未读完：在线阅读仅已读达阈值才归位"正在读"，避免瞟几眼污染；
+      // 下载漫画（_useLocal）视为明确阅读意图，跳过阈值直接归位"正在读"。
       final seen =
           ReadingProgressService()
               .getProgress(widget.comic.pathWord)

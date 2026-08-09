@@ -16,7 +16,6 @@ import '../services/book_reading_progress_service.dart';
 import '../services/bookshelf_service.dart';
 import '../services/comic_api.dart';
 import '../services/download_service.dart';
-import '../services/favorites_service.dart';
 import '../services/reading_progress_service.dart';
 import '../services/settings_service.dart';
 import '../utils/list_pagination.dart';
@@ -1272,12 +1271,7 @@ class _BookshelfPageState extends State<BookshelfPage>
         if (item.type == BookshelfItemType.comic) {
           if (!seenComic.add(item.itemId)) continue;
           Comic? comic;
-          try {
-            comic = FavoritesService().comics.firstWhere(
-              (c) => c.pathWord == item.itemId,
-            );
-          } catch (_) {}
-          if (comic == null && item.meta != null) {
+          if (item.meta != null) {
             try {
               comic = Comic.fromJson(
                 jsonDecode(item.meta!) as Map<String, dynamic>,
@@ -1774,7 +1768,6 @@ class _ComicShelfTab extends StatelessWidget {
     return ListenableBuilder(
       listenable: Listenable.merge([
         BookshelfService(),
-        FavoritesService(),
         ReadingProgressService(),
       ]),
       builder: (context, _) {
@@ -1782,16 +1775,12 @@ class _ComicShelfTab extends StatelessWidget {
           shelfId,
           BookshelfItemType.comic,
         );
-        // 建 pathWord -> Comic 索引，消除每项 firstWhere 的 O(n×m)
-        final comicMap = {
-          for (final c in FavoritesService().comics) c.pathWord: c,
-        };
         final entries = <_ShelfEntry>[];
         var i = 0;
         for (final item in items.take(displayCount)) {
-          // 优先从收藏夹解析（完整数据），否则用条目自带快照兜底
-          Comic? comic = comicMap[item.itemId];
-          if (comic == null && item.meta != null) {
+          // 只读条目 meta 快照（与收藏解耦）；无快照则跳过
+          Comic? comic;
+          if (item.meta != null) {
             try {
               comic = Comic.fromJson(
                 jsonDecode(item.meta!) as Map<String, dynamic>,
@@ -1801,19 +1790,16 @@ class _ComicShelfTab extends StatelessWidget {
           if (comic != null) {
             final c = comic;
             final rp = ReadingProgressService().getProgress(c.pathWord);
-            // 总进度：已读章节 / 总章节数（取自漫画快照 totalChapters）
-            // 缺失 totalChapters 时退化为"已读 N 话"文字，不区分下载/在线
+            // 进度统一为"已读 N 话"文字（不依赖 totalChapters，与下载/在线无关）
             final double? progress;
             final String? progressLabel;
             if (rp != null && rp.seenChapterIds.isNotEmpty) {
-              final total = c.totalChapters;
-              if (total != null && total > 0) {
-                progress = (rp.seenChapterIds.length / total).clamp(0.0, 1.0);
-                progressLabel = null;
-              } else {
-                progress = null;
-                progressLabel = '已读 ${rp.seenChapterIds.length} 话';
-              }
+              progress = null;
+              // 已读话数=续读位置（读到第几话）；旧数据无 lastChapterIndex 时回退累计已读章节数
+              final readCount = rp.lastChapterIndex >= 0
+                  ? rp.lastChapterIndex + 1
+                  : rp.seenChapterIds.length;
+              progressLabel = '已读 $readCount 话';
             } else {
               progress = null;
               progressLabel = null;
@@ -2004,6 +1990,15 @@ class _ComicShelfTab extends StatelessWidget {
       rootNav.pop(); // 关 loading
       if (!context.mounted) return;
       final groups = result.groups;
+      // 章节按展示排序键统一排序，与详情页/下载页/离线阅读器顺序保持一致
+      for (final g in groups) {
+        g.chapters.sort(
+          (a, b) => chapterDisplaySortKey(
+            a.title,
+            a.order,
+          ).compareTo(chapterDisplaySortKey(b.title, b.order)),
+        );
+      }
       // 起始章节：续读章节；无记录则第一章（order 最小）
       ComicChapter? start;
       var initialPage = 0;

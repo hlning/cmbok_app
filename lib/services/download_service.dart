@@ -63,6 +63,8 @@ class DownloadTask {
   final String comicPathWord;
   final String comicTitle;
   final String comicCover;
+  final String? comicAuthor; // 漫画作者（写书架快照用，与收藏解耦）
+  final int? totalChapters; // 漫画总章节数（写书架快照用，判断下载完整度）
   final String chapterId;
   final String chapterTitle;
   final int chapterOrder;
@@ -86,6 +88,8 @@ class DownloadTask {
     required this.comicPathWord,
     required this.comicTitle,
     required this.comicCover,
+    this.comicAuthor,
+    this.totalChapters,
     required this.chapterId,
     required this.chapterTitle,
     this.chapterOrder = 0,
@@ -107,6 +111,8 @@ class DownloadTask {
       comicPathWord: pathWord,
       comicTitle: j['comicTitle'] as String? ?? '',
       comicCover: j['comicCover'] as String? ?? '',
+      comicAuthor: j['comicAuthor'] as String?,
+      totalChapters: j['totalChapters'] as int?,
       chapterId: chapterId,
       chapterTitle: j['chapterTitle'] as String? ?? '',
       chapterOrder: j['chapterOrder'] as int? ?? 0,
@@ -125,6 +131,8 @@ class DownloadTask {
     'comicPathWord': comicPathWord,
     'comicTitle': comicTitle,
     'comicCover': comicCover,
+    'comicAuthor': comicAuthor,
+    'totalChapters': totalChapters,
     'chapterId': chapterId,
     'chapterTitle': chapterTitle,
     'chapterOrder': chapterOrder,
@@ -240,6 +248,8 @@ class DownloadService extends ChangeNotifier {
         id: t.comicPathWord,
         title: t.comicTitle,
         cover: t.comicCover,
+        author: t.comicAuthor,
+        totalChapters: t.totalChapters,
         pathWord: t.comicPathWord,
       );
       items.add(
@@ -393,6 +403,8 @@ class DownloadService extends ChangeNotifier {
         comicPathWord: comic.pathWord,
         comicTitle: comic.title,
         comicCover: comic.cover,
+        comicAuthor: comic.author,
+        totalChapters: comic.totalChapters,
         chapterId: chapter.id,
         chapterTitle: chapter.title,
         chapterOrder: chapter.order,
@@ -514,6 +526,8 @@ class DownloadService extends ChangeNotifier {
         id: task.comicPathWord,
         title: task.comicTitle,
         cover: task.comicCover,
+        author: task.comicAuthor,
+        totalChapters: task.totalChapters,
         pathWord: task.comicPathWord,
       );
       await BookshelfService().addToBookshelf(

@@ -161,9 +161,14 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
         _showAllChapters = false;
       });
       // 回填书架快照：用所有分组章节之和作为 totalChapters（与下载范围一致），
-      // 供书架判断下载完整度；未收藏或关键字段未变化时内部会跳过
-      FavoritesService().updateComicIfFavorite(
-        _comic.copyWith(totalChapters: _totalChapters),
+      // 供书架判断下载完整度与显示。与收藏解耦，直接写各书架 meta。
+      // 同时更新 _comic：detail 接口的 totalChapters 常缺失，改用分组之和，
+      // 使后续下载面板携带可靠的 totalChapters 写入下载快照。
+      _comic = _comic.copyWith(totalChapters: _totalChapters);
+      await BookshelfService().updateItemMeta(
+        _comic.pathWord,
+        BookshelfItemType.comic,
+        jsonEncode(_comic.toJson()),
       );
     } catch (e) {
       _log('加载失败: $e');

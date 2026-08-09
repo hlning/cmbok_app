@@ -422,6 +422,33 @@ class BookshelfService extends ChangeNotifier {
     return null;
   }
 
+  /// 更新某条目在各书架的 meta 快照（详情页回填 totalChapters/author 用）。
+  /// 与收藏解耦后，书架显示/点击完整度判断完全依赖此快照。
+  Future<void> updateItemMeta(
+    String itemId,
+    BookshelfItemType type,
+    String meta,
+  ) async {
+    var changed = false;
+    for (var i = 0; i < _items.length; i++) {
+      final it = _items[i];
+      if (it.itemId == itemId && it.type == type && it.meta != meta) {
+        _items[i] = BookshelfItem(
+          bookshelfId: it.bookshelfId,
+          itemId: it.itemId,
+          type: it.type,
+          addedAt: it.addedAt,
+          meta: meta,
+        );
+        changed = true;
+      }
+    }
+    if (changed) {
+      await _persistItems();
+      notifyListeners();
+    }
+  }
+
   // ========== 内部方法 ==========
 
   void _sortShelves() {
