@@ -26,9 +26,14 @@
 
 ## 📸 应用预览
 
-> 截图占位，后续补充。
-
-<!-- 建议截图：漫画首页 / 漫画详情 / 图书仿真阅读 / 收藏页 / 下载页 -->
+<div style="display:flex; gap:15px; flex-wrap:wrap; align-items:center;">
+  <img src="https://github.com/user-attachments/assets/e330a1a8-72cb-475f-afbf-4f1f102fdef9" height="200" />
+  <img src="https://github.com/user-attachments/assets/964c3852-ab59-407f-987a-13ff1e88a23d" height="200" />
+  <img src="https://github.com/user-attachments/assets/8fc72f3d-3f55-4ac6-a63a-32ece5cadd6c" height="200" />
+  <img src="https://github.com/user-attachments/assets/d37474ca-4cf2-479b-a36b-8518dd0e4a48" height="200" />
+  <img src="https://github.com/user-attachments/assets/41fc020a-f0be-4519-bbf6-5563e4a27927" height="200" />
+  <img src="https://github.com/user-attachments/assets/45bc5e67-2f1c-4451-982f-1595dc363979" height="200" />
+</div>
 
 ## 📱 下载安装
 
