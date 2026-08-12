@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import '../models/book.dart';
+import '../models/book_category.dart';
 import '../models/search_result.dart';
 import '../services/book_download_service.dart';
 import '../services/book_view_mode.dart';
@@ -57,7 +58,16 @@ class _BookSearchPageState extends State<BookSearchPage>
   bool _isLoading = false;
   bool _isSearching = false;
   String _keyword = '';
-  String _format = ''; // '' = 全部，否则 EPUB/PDF/...
+
+  // 分类额外过滤条件：年份/语言仅分类模式用；格式 _filterExtensions 与搜索页小标签
+  // 同源联动，关键词/分类模式都用，跨模式保留。
+  bool _categoryMode = false; // 分类浏览模式（与关键词搜索互斥）
+  BookCategory? _selectedCategory; // 当前选中的子分类
+  bool _categorySheetOpening = false; // 分类弹窗防连点守卫
+  int? _filterYearFrom;
+  int? _filterYearTo;
+  List<String> _filterLanguages = [];
+  List<String> _filterExtensions = [];
 
   bool _showBackToTop = false;
   bool _historyVisible = false;
@@ -89,6 +99,7 @@ class _BookSearchPageState extends State<BookSearchPage>
     BookDownloadService().addListener(_onServiceChanged);
     _wasUnavailable = ZlibraryService().isUnavailable;
     _loadHistory();
+    _ensureCategories();
   }
 
   @override
@@ -140,6 +151,18 @@ class _BookSearchPageState extends State<BookSearchPage>
     if (mounted) setState(() => _history = h);
   }
 
+  /// 分类目录：缓存为空且域名就绪时后台拉取一次。
+  /// 成功后 ZlibraryService.notifyListeners 触发 _onServiceChanged 重建，分类按钮自动显示。
+  Future<void> _ensureCategories() async {
+    if (BookCategories.groups.isNotEmpty) return;
+    if (ZlibraryService().isUnavailable) return;
+    try {
+      await ZlibraryService().fetchCategories();
+    } catch (e) {
+      _log('后台拉取分类失败: $e');
+    }
+  }
+
   Future<void> _addHistory(String keyword) async {
     final h = await SearchHistoryService.add(
       keyword,
@@ -165,7 +188,9 @@ class _BookSearchPageState extends State<BookSearchPage>
     if (!controller.hasClients) return;
     final pixels = controller.position.pixels;
     final max = controller.position.maxScrollExtent;
-    if (pixels >= max - 200 && max > 0) {
+    final nearBottom = pixels >= max - 200 && max > 0;
+    if (nearBottom) {
+      _log('onScroll 触底: pixels=$pixels, max=$max, hasMore=${_result.hasMore}');
       _loadMore();
     }
     final show = pixels > 300;
@@ -187,6 +212,8 @@ class _BookSearchPageState extends State<BookSearchPage>
       _historyVisible = false;
       _errorMsg = null;
     });
+    // 关键词搜索退出分类模式
+    if (keyword.trim().isNotEmpty) _exitCategoryMode();
     // 未登录时默认使用内置账号搜索（不受"使用内置账号"开关限制），无需弹登录框
     _addHistory(keyword);
     _doSearch();
@@ -194,6 +221,12 @@ class _BookSearchPageState extends State<BookSearchPage>
 
   Future<void> _doSearch({bool loadMore = false}) async {
     _log('开始搜索, loadMore=$loadMore, isLoading=$_isLoading, keyword=$_keyword');
+
+    // 分类模式走 WebView 抓 HTML
+    if (_categoryMode && _selectedCategory != null) {
+      await _doCategorySearch(loadMore: loadMore);
+      return;
+    }
 
     if (_isLoading) return;
     if (!loadMore && _keyword.trim().isEmpty) return;
@@ -208,7 +241,7 @@ class _BookSearchPageState extends State<BookSearchPage>
       final page = loadMore ? _result.currentPage + 1 : 1;
       final newResult = await ZlibraryService().search(
         _keyword,
-        extensions: _format.isEmpty ? null : _format,
+        extensions: _filterExtensions.isEmpty ? null : _filterExtensions,
         page: page,
       );
       _log('API返回: ${newResult.items.length} 条, 总数: ${newResult.total}');
@@ -259,9 +292,206 @@ class _BookSearchPageState extends State<BookSearchPage>
     }
   }
 
+  // -------------------- 分类筛选（仿漫画搜索 search_page.dart）--------------------
+
+  /// 分类筛选按钮（视图切换右边；分类表为空则隐藏）。
+  bool get _hasActiveFilters =>
+      _filterYearFrom != null ||
+      _filterYearTo != null ||
+      _filterLanguages.isNotEmpty ||
+      _filterExtensions.isNotEmpty;
+
+  Widget _buildCategoryButton(bool isDark) {
+    if (ZlibraryService().isUnavailable) return const SizedBox.shrink();
+    final active = _categoryMode;
+    final hasFilter = _hasActiveFilters;
+    return GestureDetector(
+      onTap: () => _openCategorySheet(isDark),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: active
+                  ? JellyTheme.primary
+                  : (isDark ? const Color(0xFF2D2D4A) : Colors.white),
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Icon(
+              Icons.tune_rounded,
+              size: 20,
+              color: active
+                  ? Colors.white
+                  : (isDark ? Colors.white70 : JellyTheme.textSecondary),
+            ),
+          ),
+          if (hasFilter)
+            Positioned(
+              right: -2,
+              top: -2,
+              child: Container(
+                width: 8,
+                height: 8,
+                decoration: const BoxDecoration(
+                  color: Colors.redAccent,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 打开分类筛选弹窗（主分类 → 子分类两级，底部重置/确定）。
+  /// 打开分类筛选弹窗（主分类 -> 子分类 + 年份/语言/格式过滤，底部重置/确定）。
+  /// 打开分类筛选弹窗（主分类 -> 子分类 + 年份/语言/格式过滤，底部重置/确定）。
+  Future<void> _openCategorySheet(bool isDark) async {
+    if (_categorySheetOpening) return;
+    _categorySheetOpening = true;
+    FocusScope.of(context).unfocus();
+    try {
+      if (!BookCategories.supported) {
+        // 缓存为空：先拉取一次（首拉失败的重试入口）
+        _showTip('正在加载分类...');
+        try {
+          await ZlibraryService().fetchCategories(force: true);
+        } catch (e) {
+          _log('打开分类弹窗前拉取失败: $e');
+        }
+        if (!mounted) return;
+        if (!BookCategories.supported) {
+          _showTip('分类加载失败，请稍后重试');
+          return;
+        }
+      }
+      final result = await showModalBottomSheet<_BookCategorySheetResult?>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: isDark ? const Color(0xFF1E1E2E) : Colors.white,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        builder: (ctx) => _BookCategorySheet(
+          isDark: isDark,
+          initialCategory: _selectedCategory,
+          initialYearFrom: _filterYearFrom,
+          initialYearTo: _filterYearTo,
+          initialLanguages: _filterLanguages,
+          initialExtensions: _filterExtensions,
+        ),
+      );
+      if (result is _BookCategorySheetResult && mounted) {
+        _applyCategory(result);
+      }
+    } finally {
+      _categorySheetOpening = false;
+    }
+  }
+
+  /// 应用分类选择：切分类模式、清空搜索框、按分类列出。
+  void _applyCategory(_BookCategorySheetResult r) {
+    FocusScope.of(context).unfocus();
+    _selectedCategory = r.category;
+    _categoryMode = true;
+    _filterYearFrom = r.yearFrom;
+    _filterYearTo = r.yearTo;
+    _filterLanguages = List.of(r.languages);
+    _filterExtensions = List.of(r.extensions);
+    _keyword = '';
+    _searchController.clear();
+    setState(() {
+      _result = SearchResult.empty();
+      _historyVisible = false;
+      _errorMsg = null;
+    });
+    _doCategorySearch();
+  }
+
+  /// 退出分类模式（搜索框输入关键词时调用）。
+  /// 格式 `_filterExtensions` 跨模式保留（与搜索页小标签联动）；年份/语言仅分类模式用，清空。
+  void _exitCategoryMode() {
+    if (!_categoryMode) return;
+    _categoryMode = false;
+    _selectedCategory = null;
+    _filterYearFrom = null;
+    _filterYearTo = null;
+    _filterLanguages = [];
+  }
+
+  /// 分类浏览搜索（走 WebView 抓 HTML，分页复用 _result）。
+  Future<void> _doCategorySearch({bool loadMore = false}) async {
+    _log('开始分类搜索, loadMore=$loadMore, category=$_selectedCategory');
+    if (_isLoading) return;
+    if (_selectedCategory == null) return;
+    setState(() {
+      _isLoading = true;
+      _errorMsg = null;
+      if (!loadMore) _isSearching = true;
+    });
+    try {
+      final page = loadMore ? _result.currentPage + 1 : 1;
+      final newResult = await ZlibraryService().searchInCategory(
+        _selectedCategory!,
+        keyword: _keyword.trim().isEmpty ? null : _keyword.trim(),
+        page: page,
+        yearFrom: _filterYearFrom,
+        yearTo: _filterYearTo,
+        languages: _filterLanguages.isEmpty ? null : _filterLanguages,
+        extensions: _filterExtensions.isEmpty ? null : _filterExtensions,
+      );
+      _log('分类返回: ${newResult.items.length} 条, 总数: ${newResult.total}');
+      if (mounted) {
+        setState(() {
+          if (loadMore) {
+            _result = SearchResult<Book>(
+              items: [..._result.items, ...newResult.items],
+              total: newResult.total,
+              currentPage: newResult.currentPage,
+              totalPages: newResult.totalPages,
+            );
+          } else {
+            _result = newResult;
+            _searchSession++;
+          }
+        });
+      }
+    } on ZlibraryException catch (e) {
+      _log('分类搜索业务异常: ${e.code} ${e.message}');
+      if (mounted) setState(() => _errorMsg = _friendlyError(e));
+    } catch (e) {
+      _log('分类搜索异常: $e');
+      if (mounted) setState(() => _errorMsg = '分类搜索失败，请检查网络或稍后重试');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isSearching = false;
+        });
+      }
+    }
+  }
+
   void _loadMore() {
+    _log(
+      'loadMore 触发: hasMore=${_result.hasMore}, isLoading=$_isLoading, '
+      'currentPage=${_result.currentPage}, totalPages=${_result.totalPages}, '
+      'items=${_result.items.length}',
+    );
     if (_result.hasMore && !_isLoading) {
-      _doSearch(loadMore: true);
+      if (_categoryMode) {
+        _doCategorySearch(loadMore: true);
+      } else {
+        _doSearch(loadMore: true);
+      }
     }
   }
 
@@ -301,17 +531,101 @@ class _BookSearchPageState extends State<BookSearchPage>
 
   // -------------------- 详情 --------------------
 
-  void _openDetail(Book book) {
+  void _openDetail(Book book) async {
+    // 分类页来源（hash 是 dl/{slug}，无 eapi hash）：先搜索匹配 bookId 拿 eapi hash
+    var target = book;
+    if (book.hash.startsWith('dl/')) {
+      final matched = await _matchBookBySearch(book);
+      if (!mounted) return;
+      if (matched == null) {
+        _showTip('未找到匹配图书，无法下载');
+        return;
+      }
+      target = matched;
+    }
+    if (!mounted) return;
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => BookDetailPage(
-          book: book,
-          heroTag: bookCoverHeroTag('search', book),
+          book: target,
+          heroTag: bookCoverHeroTag('search', target),
           searchResults: _result.items,
         ),
       ),
     );
+  }
+
+  /// 分类页来源的书（hash 是 dl/{slug}）通过 eapi 搜索匹配 bookId，拿 eapi hash。
+  /// 用 title + extension + language + year 组合搜索提高准确性，优先 bookId 匹配。
+  Future<Book?> _matchBookBySearch(Book book) async {
+    // 命中缓存直接返回，避免同一本分类书重复点击反复搜索
+    final cached = ZlibraryService().categoryMatchCache(book.id);
+    if (cached != null) {
+      _log('命中分类匹配缓存: ${book.id} hash=${cached.hash}');
+      return cached;
+    }
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => Dialog(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: const [
+              CircularProgressIndicator(color: Color(0xFF6D73AA)),
+              SizedBox(width: 16),
+              Text('正在匹配图书...'),
+            ],
+          ),
+        ),
+      ),
+    );
+    try {
+      final year = int.tryParse(book.year ?? '');
+      _log(
+        '分类书搜索匹配: title="${book.title}", ext=${book.extension}, '
+        'lang=${book.language}, year=$year, id=${book.id}',
+      );
+      final result = await ZlibraryService().search(
+        book.title,
+        extensions: (book.extension == null || book.extension!.isEmpty)
+            ? null
+            : [book.extension!],
+        languages: book.language,
+        yearFrom: year,
+        yearTo: year,
+        limit: 20,
+      );
+      _log('分类书搜索返回 ${result.items.length} 条');
+      // 优先 bookId 匹配（z-library bookId 全局唯一）
+      for (final b in result.items) {
+        if (b.id == book.id) {
+          _log('bookId 匹配成功: ${b.id} hash=${b.hash}');
+          ZlibraryService().setCategoryMatchCache(b);
+          return b;
+        }
+      }
+      // 备选：title+year+language+extension 组合匹配
+      for (final b in result.items) {
+        if (b.title == book.title &&
+            b.year == book.year &&
+            b.language == book.language &&
+            b.extension == book.extension) {
+          _log('组合匹配成功: ${b.id} hash=${b.hash}');
+          ZlibraryService().setCategoryMatchCache(b);
+          return b;
+        }
+      }
+      _log('未匹配到图书');
+      return null;
+    } catch (e) {
+      _log('分类书搜索匹配失败: $e');
+      return null;
+    } finally {
+      if (mounted) Navigator.pop(context); // 关 loading
+    }
   }
 
   void _showTip(String msg) {
@@ -604,6 +918,8 @@ class _BookSearchPageState extends State<BookSearchPage>
                           ],
                         ),
                       ),
+                      const SizedBox(width: 8),
+                      _buildCategoryButton(isDark),
                       const Spacer(),
                     ],
                   ),
@@ -703,12 +1019,28 @@ class _BookSearchPageState extends State<BookSearchPage>
   }
 
   Widget _buildFormatChip(BookFormat f, bool isDark) {
-    final selected = (f.value ?? '') == _format;
+    final isAll = f.value == null;
+    final selected = isAll
+        ? _filterExtensions.isEmpty
+        : _filterExtensions.contains(f.value);
     return GestureDetector(
       onTap: () {
-        setState(() => _format = f.value ?? '');
-        // 有关键词时切换格式自动重新搜索
-        if (_keyword.trim().isNotEmpty) {
+        setState(() {
+          if (isAll) {
+            _filterExtensions.clear();
+          } else {
+            final v = f.value!;
+            if (_filterExtensions.contains(v)) {
+              _filterExtensions.remove(v);
+            } else {
+              _filterExtensions.add(v);
+            }
+          }
+        });
+        // 切换格式后按当前模式自动重新搜索（类型标签与分类弹窗同源联动）
+        if (_categoryMode && _selectedCategory != null) {
+          _doCategorySearch();
+        } else if (_keyword.trim().isNotEmpty) {
           _doSearch();
         }
       },
@@ -777,7 +1109,8 @@ class _BookSearchPageState extends State<BookSearchPage>
   }
 
   Widget _buildBody() {
-    if (_showHistory) return _buildHistory();
+    // 分类模式下不显示搜索历史
+    if (_showHistory && !_categoryMode) return _buildHistory();
 
     if (_isSearching) {
       return const Center(
@@ -786,7 +1119,7 @@ class _BookSearchPageState extends State<BookSearchPage>
           children: [
             CircularProgressIndicator(color: Color(0xFF6D73AA)),
             SizedBox(height: 16),
-            Text('正在搜索...', style: TextStyle(color: Colors.grey)),
+            Text('正在筛选...', style: TextStyle(color: Colors.grey)),
           ],
         ),
       );
@@ -808,13 +1141,22 @@ class _BookSearchPageState extends State<BookSearchPage>
                 style: const TextStyle(color: Colors.grey),
               ),
             ),
+            const SizedBox(height: 16),
+            TextButton.icon(
+              onPressed: () =>
+                  _categoryMode ? _doCategorySearch() : _doSearch(),
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('重试'),
+            ),
           ],
         ),
       );
     }
 
-    // 无结果
-    if (_result.items.isEmpty && _keyword.isNotEmpty && !_isSearching) {
+    // 无结果（关键词或分类模式均适用）
+    if (_result.items.isEmpty &&
+        (_keyword.isNotEmpty || _categoryMode) &&
+        !_isSearching) {
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -827,8 +1169,8 @@ class _BookSearchPageState extends State<BookSearchPage>
       );
     }
 
-    // 未搜索 = 初始界面
-    if (_result.items.isEmpty) {
+    // 未搜索 = 初始界面（分类模式除外）
+    if (_result.items.isEmpty && _keyword.isEmpty && !_categoryMode) {
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -1059,4 +1401,481 @@ class _LogoutButtonState extends State<_LogoutButton> {
       ),
     );
   }
+}
+
+/// 分类筛选弹窗返回结果。
+/// 分类筛选弹窗内容（独立 StatefulWidget，管理 TextEditingController 生命周期）。
+/// 控制器在 initState 创建、dispose 销毁，避免弹窗退出动画期间过早 dispose
+/// 触发 InheritedElement._dependents 非空断言。
+class _BookCategorySheet extends StatefulWidget {
+  final bool isDark;
+  final BookCategory? initialCategory;
+  final int? initialYearFrom;
+  final int? initialYearTo;
+  final List<String> initialLanguages;
+  final List<String> initialExtensions;
+
+  const _BookCategorySheet({
+    required this.isDark,
+    required this.initialCategory,
+    required this.initialYearFrom,
+    required this.initialYearTo,
+    required this.initialLanguages,
+    required this.initialExtensions,
+  });
+
+  @override
+  State<_BookCategorySheet> createState() => _BookCategorySheetState();
+}
+
+class _BookCategorySheetState extends State<_BookCategorySheet> {
+  late final List<String> _selLanguages;
+  late final List<String> _selExtensions;
+  int _selectedGroupIdx = -1;
+  BookCategory? _selectedChild;
+  int? _yearFrom;
+  int? _yearTo;
+  bool _refreshing = false;
+  final GlobalKey _selectedTabKey = GlobalKey();
+
+  /// 年份候选项：null（不限）+ 当前年份倒序到 1900。
+  List<int?> get _yearOptions => [
+    null,
+    ...List.generate(
+      DateTime.now().year - 1900 + 1,
+      (i) => DateTime.now().year - i,
+    ),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _selLanguages = List<String>.from(widget.initialLanguages);
+    _selExtensions = List<String>.from(widget.initialExtensions);
+    _selectedChild = widget.initialCategory;
+    _yearFrom = widget.initialYearFrom;
+    _yearTo = widget.initialYearTo;
+    if (widget.initialCategory != null) {
+      for (var i = 0; i < BookCategories.groups.length; i++) {
+        if (BookCategories.groups[i].children.any(
+          (c) => c.id == widget.initialCategory!.id,
+        )) {
+          _selectedGroupIdx = i;
+          break;
+        }
+      }
+    }
+    // 打开弹窗时把已选中的主分类标签滚到居中（重进可见）
+    if (_selectedGroupIdx >= 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final ctx = _selectedTabKey.currentContext;
+        if (ctx != null) {
+          Scrollable.ensureVisible(ctx, alignment: 0.5);
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+  }
+
+  void _confirm() {
+    FocusScope.of(context).unfocus();
+    Navigator.pop(
+      context,
+      _BookCategorySheetResult(
+        groupIdx: _selectedGroupIdx,
+        category: _selectedChild!,
+        yearFrom: _yearFrom,
+        yearTo: _yearTo,
+        languages: List.of(_selLanguages),
+        extensions: List.of(_selExtensions),
+      ),
+    );
+  }
+
+  void _reset() {
+    setState(() {
+      _selectedGroupIdx = -1;
+      _selectedChild = null;
+      _selLanguages.clear();
+      _selExtensions.clear();
+      _yearFrom = null;
+      _yearTo = null;
+    });
+  }
+
+  /// 强制重新抓取分类目录（站点分类结构变化时手动刷新）。
+  Future<void> _refresh() async {
+    if (_refreshing) return;
+    setState(() => _refreshing = true);
+    try {
+      await ZlibraryService().fetchCategories(force: true);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('分类刷新失败，请稍后重试'),
+              duration: Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _refreshing = false;
+          // 刷新后组数可能变化，选中越界则重置
+          if (_selectedGroupIdx >= BookCategories.groups.length) {
+            _selectedGroupIdx = -1;
+            _selectedChild = null;
+          }
+        });
+      }
+    }
+  }
+
+  Widget _yearDropdown({
+    required int? value,
+    required String hint,
+    required Color labelColor,
+    required Color chipColor,
+    required ValueChanged<int?> onChanged,
+  }) {
+    return Container(
+      width: 104,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: chipColor,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<int?>(
+          value: value,
+          isExpanded: true,
+          isDense: true,
+          hint: Text(hint, style: const TextStyle(fontSize: 12)),
+          style: TextStyle(fontSize: 12, color: labelColor),
+          items: _yearOptions
+              .map(
+                (y) => DropdownMenuItem<int?>(
+                  value: y,
+                  child: Text(y?.toString() ?? '不限'),
+                ),
+              )
+              .toList(),
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = widget.isDark;
+    final labelColor = isDark ? Colors.white : JellyTheme.textPrimaryLight;
+    final chipColor = isDark
+        ? const Color(0xFF2D2D4A)
+        : const Color(0xFFF0F0F5);
+    final chipTextColor = isDark ? Colors.white70 : JellyTheme.textSecondary;
+    // 通用 chip（子分类/语言/格式复用）
+    Widget chip(String label, bool selected, VoidCallback onTap) =>
+        GestureDetector(
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: selected ? JellyTheme.primary : chipColor,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                color: selected ? Colors.white : chipTextColor,
+              ),
+            ),
+          ),
+        );
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.72,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 标题栏
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 8, 4),
+              child: Row(
+                children: [
+                  Text(
+                    '分类筛选',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: labelColor,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: _refreshing
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh_rounded),
+                    onPressed: _refreshing ? null : _refresh,
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded),
+                    onPressed: () {
+                      FocusScope.of(context).unfocus();
+                      Navigator.pop(context);
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            const SizedBox(height: 10),
+            // 主分类标签栏（横向滚动，单选）
+            SizedBox(
+              height: 44,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                cacheExtent: double.maxFinite,
+                itemCount: BookCategories.groups.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (_, gi) {
+                  final g = BookCategories.groups[gi];
+                  final selected = gi == _selectedGroupIdx;
+                  return GestureDetector(
+                    key: selected ? _selectedTabKey : null,
+                    onTap: () => setState(() {
+                      if (_selectedGroupIdx == gi) {
+                        _selectedGroupIdx = -1;
+                        _selectedChild = null;
+                      } else {
+                        _selectedGroupIdx = gi;
+                        _selectedChild = null;
+                      }
+                    }),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: selected ? JellyTheme.primary : chipColor,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Center(
+                        child: Text(
+                          g.title,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: selected
+                                ? FontWeight.w600
+                                : FontWeight.normal,
+                            color: selected ? Colors.white : chipTextColor,
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Divider(height: 1),
+            // 子分类 + 年份/语言/格式过滤条件（整体可滚动，过滤条件始终常驻）
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '子分类',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: labelColor,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    _selectedGroupIdx < 0
+                        ? Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Text(
+                              '请选择主分类',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: chipTextColor,
+                              ),
+                            ),
+                          )
+                        : Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: BookCategories
+                                .groups[_selectedGroupIdx]
+                                .children
+                                .map(
+                                  (c) => chip(
+                                    c.zhName,
+                                    _selectedChild != null &&
+                                        _selectedChild!.id == c.id,
+                                    () => setState(() => _selectedChild = c),
+                                  ),
+                                )
+                                .toList(),
+                          ),
+                    const SizedBox(height: 16),
+                    Text(
+                      '年份',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: labelColor,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        _yearDropdown(
+                          value: _yearFrom,
+                          hint: '起始',
+                          labelColor: labelColor,
+                          chipColor: chipColor,
+                          onChanged: (v) => setState(() => _yearFrom = v),
+                        ),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 8),
+                          child: Text('–'),
+                        ),
+                        _yearDropdown(
+                          value: _yearTo,
+                          hint: '结束',
+                          labelColor: labelColor,
+                          chipColor: chipColor,
+                          onChanged: (v) => setState(() => _yearTo = v),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      '语言',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: labelColor,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: BookCategoryFilters.languages.map((lang) {
+                        final selected = _selLanguages.contains(lang.value);
+                        return chip(
+                          lang.label,
+                          selected,
+                          () => setState(() {
+                            if (selected) {
+                              _selLanguages.remove(lang.value);
+                            } else {
+                              _selLanguages.add(lang.value);
+                            }
+                          }),
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      '格式',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: labelColor,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: BookCategoryFilters.extensions.map((ext) {
+                        final selected = _selExtensions.contains(ext);
+                        return chip(
+                          ext,
+                          selected,
+                          () => setState(() {
+                            if (selected) {
+                              _selExtensions.remove(ext);
+                            } else {
+                              _selExtensions.add(ext);
+                            }
+                          }),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+            // 底部按钮：重置 / 确定
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 12, 6),
+              child: Row(
+                children: [
+                  TextButton(onPressed: _reset, child: const Text('重置')),
+                  const Spacer(),
+                  FilledButton(
+                    onPressed: _selectedChild != null ? _confirm : null,
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 4,
+                      ),
+                      child: Text('确定'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BookCategorySheetResult {
+  final int groupIdx;
+  final BookCategory category;
+  final int? yearFrom;
+  final int? yearTo;
+  final List<String> languages;
+  final List<String> extensions;
+  const _BookCategorySheetResult({
+    required this.groupIdx,
+    required this.category,
+    this.yearFrom,
+    this.yearTo,
+    this.languages = const [],
+    this.extensions = const [],
+  });
 }

@@ -26,16 +26,9 @@
 
 ## 📸 应用预览
 
-<div style="display:flex; gap:10px; flex-wrap:wrap;">
-  <img src="https://github.com/user-attachments/assets/982c622d-acc9-4edd-96ae-70a6a0545b21" width="30%">
-  <img src="https://github.com/user-attachments/assets/32a85c8e-5a33-4ff8-8d69-41cf2a26b5ef" width="30%">
-  <img src="https://github.com/user-attachments/assets/beeafe28-a58b-4bf8-a97c-524cae8c053d" width="30%">
-  <img src="https://github.com/user-attachments/assets/8d49ca05-a20f-403a-8da3-fcd380c83a3b" width="30%">
-  <img src="https://github.com/user-attachments/assets/895a5b14-b38e-424d-894c-f291dc732ce3" width="30%">
-  <img src="https://github.com/user-attachments/assets/4bc17272-358a-4baa-94ab-0e90de30da1e" width="30%">
-  <img src="https://github.com/user-attachments/assets/c95191b0-1e7f-4299-bd33-46b7475b09b4" width="30%">
-  <img src="https://github.com/user-attachments/assets/7986b90b-6d4f-4c59-9cc1-44a9a36a32f1" width="30%">
-</div>
+> 截图占位，后续补充。
+
+<!-- 建议截图：漫画首页 / 漫画详情 / 图书仿真阅读 / 收藏页 / 下载页 -->
 
 ## 📱 下载安装
 

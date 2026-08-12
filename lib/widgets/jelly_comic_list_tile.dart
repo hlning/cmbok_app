@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../models/comic.dart';
+import '../source/source_manager.dart';
 import '../theme/jelly_theme.dart';
 import 'jelly_favorite_button.dart';
 import 'jelly_score_badge.dart';
@@ -16,12 +17,16 @@ class JellyComicListTile extends StatefulWidget {
   /// 封面 Hero 动画 tag（与详情页一致；为空则不启用共享元素过渡）
   final String? heroTag;
 
+  /// 是否显示漫画源角标（收藏页 true，搜索页默认 false）
+  final bool showSourceBadge;
+
   const JellyComicListTile({
     super.key,
     required this.comic,
     required this.onTap,
     this.onLongPress,
     this.heroTag,
+    this.showSourceBadge = false,
   });
 
   @override
@@ -79,6 +84,10 @@ class _JellyComicListTileState extends State<JellyComicListTile>
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final comic = widget.comic;
+    // 漫画源角标名（仅收藏页显示；无 sourceId 或源已移除则不显示）
+    final sourceName = !widget.showSourceBadge || comic.sourceId == null
+        ? null
+        : SourceManager().getSource(comic.sourceId!)?.name;
 
     return GestureDetector(
       onTapDown: _onTapDown,
@@ -134,22 +143,55 @@ class _JellyComicListTileState extends State<JellyComicListTile>
                 SizedBox(
                   width: 84,
                   height: 112,
-                  child: CachedNetworkImage(
-                    imageUrl: comic.cover,
-                    fit: BoxFit.cover,
-                    placeholder: (context, url) => Container(
-                      color: isDark ? Colors.grey[800] : Colors.grey[200],
-                      child: const Center(
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: JellyTheme.primary,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CachedNetworkImage(
+                        imageUrl: comic.cover,
+                        fit: BoxFit.cover,
+                        placeholder: (context, url) => Container(
+                          color: isDark ? Colors.grey[800] : Colors.grey[200],
+                          child: const Center(
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: JellyTheme.primary,
+                            ),
+                          ),
+                        ),
+                        errorWidget: (context, url, error) => Container(
+                          color: isDark ? Colors.grey[800] : Colors.grey[200],
+                          child: const Icon(
+                            Icons.broken_image,
+                            color: Colors.grey,
+                          ),
                         ),
                       ),
-                    ),
-                    errorWidget: (context, url, error) => Container(
-                      color: isDark ? Colors.grey[800] : Colors.grey[200],
-                      child: const Icon(Icons.broken_image, color: Colors.grey),
-                    ),
+                      if (sourceName != null)
+                        Positioned(
+                          top: 4,
+                          left: 4,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 5,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color:
+                                  (isDark ? Colors.black : JellyTheme.primary)
+                                      .withValues(alpha: 0.75),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              sourceName,
+                              style: const TextStyle(
+                                fontSize: 9,
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),

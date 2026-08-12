@@ -176,9 +176,15 @@ class _PeerTransferPageState extends State<PeerTransferPage> {
     final reachable = await _checkPeerReachable(peer);
     if (!mounted) return;
     if (!reachable) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('设备无响应，请确认电脑已开启「从手机接收」')));
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('设备无响应，请确认电脑已开启「从手机接收」'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       return;
     }
     final ok = await showDialog<bool>(

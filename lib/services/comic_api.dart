@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import '../models/comic.dart';
@@ -180,6 +182,113 @@ class ComicApi {
     }
   }
 
+  /// 按题材分类拉取漫画（走 www 网页域 SSR，非 API 子域）。
+  ///
+  /// copymanga 搜索接口不支持分类（theme 被忽略），分类列表只能走网页
+  /// `/comics?theme=<拼音>`，数据 SSR 注入在 `exemptComic-box` 的 `list` 属性
+  /// （HTML 实体编码的 Python 风格 dict 列表）。详见记忆 copymanga-theme-category-browse。
+  ///
+  /// 注意：www 网页域请求**不能带 `webp:0` 头**（会让 SSR 返空 total=0），故用独立
+  /// Dio 而非主 dio（主 dio 的 interceptor 会加 webp:0）。
+  Future<SearchResult<Comic>> getCategoryComics(
+    String theme, {
+    int page = 0,
+    int limit = 20,
+    String ordering = '-datetime_updated',
+  }) async {
+    final offset = page * limit;
+    _log('分类筛选: theme=$theme, page=$page($offset), limit=$limit');
+
+    try {
+      // 独立 Dio：www 网页域头不能带 webp:0（致 SSR 返空），不复用主 dio interceptor
+      final webDio = Dio(
+        BaseOptions(
+          connectTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 15),
+        ),
+      );
+      final qp = <String, dynamic>{
+        'ordering': ordering,
+        'limit': limit,
+        'offset': offset,
+      };
+      if (theme.isNotEmpty) qp['theme'] = theme;
+
+      final response = await webDio.get(
+        'https://www.copy3000.com/comics',
+        queryParameters: qp,
+        options: Options(
+          responseType: ResponseType.plain,
+          headers: const {
+            'User-Agent': _browserUa,
+            'version': '2025.05.09',
+            'region': '0',
+            'Origin': 'https://2025copy.com',
+            'Referer': 'https://2025copy.com/',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'same-origin',
+          },
+        ),
+      );
+      final html = (response.data ?? '').toString();
+
+      // total 从 <div class="exemptComic-box" total="N" ...>
+      final totalMatch = RegExp(
+        r'exemptComic-box[^>]*total="(\d+)"',
+      ).firstMatch(html);
+      final total = int.tryParse(totalMatch?.group(1) ?? '') ?? 0;
+
+      // list="..."：内容为 HTML 实体编码的 Python dict 列表
+      final listMatch = RegExp(r'list="([^"]*)"').firstMatch(html);
+      if (listMatch == null) {
+        _log('分类筛选: 未找到 list 属性，返回空（total=$total）');
+        return SearchResult<Comic>(
+          items: [],
+          total: total,
+          currentPage: page + 1,
+          totalPages: (total / limit).ceil(),
+        );
+      }
+
+      // HTML unescape + 单引号转双引号 -> 合法 JSON
+      final raw = listMatch
+          .group(1)!
+          .replaceAll('&#x27;', "'")
+          .replaceAll('&#39;', "'")
+          .replaceAll('&amp;', '&')
+          .replaceAll('&quot;', '"')
+          .replaceAll('&lt;', '<')
+          .replaceAll('&gt;', '>')
+          .replaceAll("'", '"');
+      final List<dynamic> data = jsonDecode(raw) as List;
+
+      final comics = <Comic>[];
+      for (final item in data) {
+        if (item is! Map<String, dynamic>) continue;
+        try {
+          final m = Map<String, dynamic>.from(item);
+          // SSR status 是数字 0/1，转中文显示（1=已完结, 0=连载中，详情页实测验证）
+          final st = m['status'];
+          m['status'] = st == 1 ? '已完结' : (st == 0 ? '连载中' : st);
+          comics.add(Comic.fromJson(m));
+        } catch (e) {
+          _log('分类筛选解析单条失败: $e');
+        }
+      }
+      _log('分类筛选: theme=$theme, 解析 ${comics.length} 条, 共 $total');
+      return SearchResult<Comic>(
+        items: comics,
+        total: total,
+        currentPage: page + 1,
+        totalPages: (total / limit).ceil(),
+      );
+    } catch (e) {
+      _log('分类筛选失败: $e');
+      rethrow;
+    }
+  }
+
   /// 单次请求 comic2/{pathWord}，返回解析后的 results
   /// 详情(comic)与分组(groups)都来自这次响应，合并以避免对同一端点重复请求
   Future<Map<String, dynamic>> _fetchComicResults(String pathWord) async {
@@ -308,7 +417,30 @@ class ComicApi {
     if (list.isNotEmpty && list.first is Map) {
       _log('首条章节 keys: ${(list.first as Map).keys.toList()}');
     }
-    return list.map((x) => ComicChapter.fromJson(x)).toList();
+    // order 取 API 返回的 list 顺序（源站原始顺序），替代不可靠的 ordered 字段
+    // （ordered 疑似全 0/倒序）。list 默认按更新时间倒序（最新在前），
+    // UI 据 CopyMangaSource.chapterOrderDescending=true 降序排得「第1话在前」。
+    final chapters = <ComicChapter>[];
+    for (var i = 0; i < list.length; i++) {
+      final cc = ComicChapter.fromJson(list[i]);
+      chapters.add(
+        ComicChapter(
+          id: cc.id,
+          title: cc.title,
+          order: i,
+          count: cc.count,
+          groupId: cc.groupId,
+          groupName: cc.groupName,
+          createTime: cc.createTime,
+        ),
+      );
+    }
+    if (chapters.isNotEmpty) {
+      _log(
+        '章节顺序(list[0]=最新?): 首=${chapters.first.title}, 尾=${chapters.last.title}',
+      );
+    }
+    return chapters;
   }
 
   /// 获取章节图片（对应 Python get_chapter_images，双路径回退）

@@ -24,6 +24,7 @@ import 'download_settings_page.dart';
 import 'favorites_page.dart';
 import 'reading_settings_page.dart';
 import 'search_page.dart';
+import 'source_repo_page.dart';
 
 /// "我的"页：菜单（下载设置等）+ 右上角暗色模式切换 + 版本信息
 class MePage extends StatefulWidget {
@@ -206,9 +207,30 @@ class _MePageState extends State<MePage> {
                         ),
                       ),
                     ),
+                    // 漫画源仓库（启用/禁用源 + 云端配置）
+                    StaggeredEntrance(
+                      key: ValueKey('${_session}_source_repo'),
+                      index: 5,
+                      child: SizedBox(
+                        width: itemWidth,
+                        child: _buildMenuItem(
+                          isDark,
+                          icon: Icons.source_rounded,
+                          iconBg: JellyTheme.primary,
+                          title: '漫画源仓库',
+                          subtitle: '启用源 · 云端配置',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const SourceRepoPage(),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                     StaggeredEntrance(
                       key: ValueKey('${_session}_2'),
-                      index: 5,
+                      index: 6,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -228,7 +250,7 @@ class _MePageState extends State<MePage> {
                     ),
                     StaggeredEntrance(
                       key: ValueKey('${_session}_download_record'),
-                      index: 6,
+                      index: 7,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -255,7 +277,7 @@ class _MePageState extends State<MePage> {
                         key: ValueKey(
                           '${_session}_hidden_${hiddenTabs[i].name}',
                         ),
-                        index: 7 + i,
+                        index: 8 + i,
                         child: SizedBox(
                           width: itemWidth,
                           child: _buildHiddenTabItem(isDark, hiddenTabs[i]),
@@ -263,7 +285,7 @@ class _MePageState extends State<MePage> {
                       ),
                     StaggeredEntrance(
                       key: ValueKey('${_session}_6'),
-                      index: 7 + hc,
+                      index: 8 + hc,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -278,7 +300,7 @@ class _MePageState extends State<MePage> {
                     ),
                     StaggeredEntrance(
                       key: ValueKey('${_session}_7'),
-                      index: 8 + hc,
+                      index: 9 + hc,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(

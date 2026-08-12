@@ -52,11 +52,12 @@ class BookPageCacheService {
     required BookTypography typo,
     required String bookId,
     required String fingerprint,
+    bool doublePage = false,
   }) {
     return '${vpW.toInt()}x${vpH.toInt()}'
         ':${typo.fontSize}:${typo.lineHeight}:${typo.padding}:${typo.verticalPadding}:${typo.fontFamily}:${typo.textScaler.scale(1.0)}'
         ':${typo.inheritedStyle.hashCode}'
-        ':$bookId:$fingerprint';
+        ':$bookId:$fingerprint:dp${doublePage ? 1 : 0}';
   }
 
   Future<File> _file(String bookId) async {
@@ -75,6 +76,7 @@ class BookPageCacheService {
     ({
       List<BookPage> pages,
       Map<String, double> ratios,
+      Map<String, int> naturalWidths,
       bool partial,
       int? resumeBlockIndex,
       List<PageEntry>? cur,
@@ -110,6 +112,7 @@ class BookPageCacheService {
     required String key,
     required List<BookPage> pages,
     required Map<String, double> ratios,
+    required Map<String, int> naturalWidths,
     required List<BookBlock> flatBlocks,
     bool partial = false,
     int? resumeBlockIndex,
@@ -143,6 +146,7 @@ class BookPageCacheService {
       root.remove(key);
       final entry = <String, dynamic>{
         'ratios': ratios,
+        'naturalWidths': naturalWidths,
         'pages': [
           for (final p in pages)
             {'first': p.firstBlockIndex, 'entries': encodeEntries(p.entries)},
@@ -194,6 +198,7 @@ Map<String, dynamic>? _decodeRawEntry(_PageDecodeArgs args) {
 ({
   List<BookPage> pages,
   Map<String, double> ratios,
+  Map<String, int> naturalWidths,
   bool partial,
   int? resumeBlockIndex,
   List<PageEntry>? cur,
@@ -205,6 +210,11 @@ _restorePages(Map<String, dynamic> entry, List<BookBlock> flat) {
     final ratiosRaw = entry['ratios'] as Map<String, dynamic>? ?? {};
     final ratios = <String, double>{};
     ratiosRaw.forEach((k, v) => ratios[k] = (v as num).toDouble());
+
+    // 旧缓存无 naturalWidths 字段 -> 空，调用方按满宽处理，兼容历史缓存
+    final naturalRaw = entry['naturalWidths'] as Map<String, dynamic>? ?? {};
+    final naturalWidths = <String, int>{};
+    naturalRaw.forEach((k, v) => naturalWidths[k] = (v as num).toInt());
 
     // 旧缓存无 partial 字段 -> 视为整本（false），兼容历史缓存
     final partial = (entry['partial'] as bool?) ?? false;
@@ -245,9 +255,13 @@ _restorePages(Map<String, dynamic> entry, List<BookBlock> flat) {
       remaining = (entry['remaining'] as num?)?.toDouble();
     }
 
+    // 旧分页缓存（有图但无自然宽度记录）：丢弃重排，以重建行内图标判据
+    if (ratios.isNotEmpty && naturalWidths.isEmpty) return null;
+
     return (
       pages: pages,
       ratios: ratios,
+      naturalWidths: naturalWidths,
       partial: partial,
       resumeBlockIndex: resumeBlockIndex,
       cur: cur,

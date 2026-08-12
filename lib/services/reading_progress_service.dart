@@ -111,9 +111,12 @@ class ReadingProgressService extends ChangeNotifier {
 
   /// 自动归位"正在读"书架的已读章节阈值：读过这么多不同章节才算"正在读"，
   /// 避免只瞄几眼（点开一两个章节）就污染正在读书架。
-  static const int readingShelfThreshold = 10;
+  static const int readingShelfThreshold = 5;
 
   final Map<String, ComicReadingProgress> _map = {};
+
+  /// updatePageIndex 节流时间戳：翻页时最多 1 秒通知一次，避免频繁重建监听方
+  int _lastPageNotifyAt = 0;
 
   /// 初始化：从本地加载
   Future<void> init() async {
@@ -221,14 +224,20 @@ class ReadingProgressService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 翻页时更新当前页（仅当章节一致）。只持久化，不 notifyListeners，
-  /// 避免频繁翻页造成下载页等监听方过度重建。
+  /// 翻页时更新当前页（仅当章节一致）。节流通知监听方（1秒一次），
+  /// 让书架在阅读器后台静默重建以触发封面 fade 动画（与图书 recordBlock 一致）；
+  /// 不更新 updatedAt（排序仍按切章节时间）。下载页/详情页仅 setState，节流下可接受。
   void updatePageIndex(String pathWord, String chapterId, int pageIndex) {
     final p = _map[pathWord];
     if (p == null || p.lastChapterId != chapterId) return;
     if (p.lastPageIndex == pageIndex) return;
     _map[pathWord] = p.copyWith(lastPageIndex: pageIndex);
     _persist();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastPageNotifyAt >= 1000) {
+      _lastPageNotifyAt = now;
+      notifyListeners();
+    }
   }
 
   /// 该漫画是否在"已下载的书"书架中。

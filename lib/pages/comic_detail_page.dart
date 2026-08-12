@@ -4,7 +4,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/comic.dart';
-import '../services/comic_api.dart';
+import '../source/adapter.dart';
+import '../source/source_manager.dart';
 import '../services/download_service.dart';
 import '../models/bookshelf.dart';
 import '../services/bookshelf_service.dart';
@@ -37,7 +38,6 @@ class ComicDetailPage extends StatefulWidget {
 }
 
 class _ComicDetailPageState extends State<ComicDetailPage> {
-  final ComicApi _api = ComicApi();
   final ScrollController _scrollController = ScrollController();
 
   late Comic _comic;
@@ -71,6 +71,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
       pathWord: widget.comic.pathWord,
       totalChapters: widget.comic.totalChapters,
       updateTime: widget.comic.updateTime,
+      sourceId: widget.comic.sourceId,
     );
     _scrollController.addListener(_onScroll);
     DownloadService().addListener(_onDownloadChanged);
@@ -123,7 +124,19 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
 
     try {
       // 一次请求同时加载详情与章节（避免对 comic2 重复请求触发风控）
-      final result = await _api.getComicDetailAndChapters(_comic.pathWord);
+      // 优先用漫画自身所属源（书架含多源漫画，当前选中源未必匹配）；
+      // 旧数据无 sourceId 时兜底当前源
+      final source = (_comic.sourceId != null && _comic.sourceId!.isNotEmpty)
+          ? (SourceManager().getSource(_comic.sourceId!) ??
+              SourceManager().current)
+          : SourceManager().current;
+      final details = await source.getMangaDetailsAndChapters(
+        comicToCManga(_comic, source.id),
+      );
+      final result = (
+        comic: cmangaToComic(details.manga),
+        groups: cchaptersToGroups(details.chapters),
+      );
       final detail = result.comic;
       final groups = result.groups;
       _log(
@@ -145,15 +158,14 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
           rating: detail.rating,
           popular: detail.popular,
           updateTime: detail.updateTime,
+          sourceId: detail.sourceId ?? source.id,
         );
-        // 章节按展示排序键统一排序，与下载管理页/离线阅读器顺序保持一致，
-        // 避免阅读与下载的章节顺序对不上
+        // 章节按源站原始 order 排序，方向由源决定，统一「第1话在前」；
+        // 与下载管理页/离线阅读器顺序保持一致，避免阅读与下载顺序对不上
         for (final g in groups) {
           g.chapters.sort(
-            (a, b) => chapterDisplaySortKey(
-              a.title,
-              a.order,
-            ).compareTo(chapterDisplaySortKey(b.title, b.order)),
+            (a, b) =>
+                chapterCompare(a.order, b.order, source.chapterOrderDescending),
           );
         }
         _groups = groups;
@@ -234,6 +246,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
           else if (_error != null)
             _buildChapterError()
           else ...[
+            _buildLatestChapters(),
             _buildChapterSummary(),
             ..._buildChapterList(),
           ],
@@ -264,6 +277,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
           aspectRatio: 3 / 4,
           child: CachedNetworkImage(
             imageUrl: _comic.cover,
+            httpHeaders: coverHeaders(_comic.sourceId),
             fit: BoxFit.cover,
             placeholder: (c, u) => Container(
               color: isDark ? JellyTheme.cardDark : Colors.grey[200],
@@ -666,6 +680,105 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
   }
 
   /// 章节数统计：共多少话（按分组统计）
+  /// 最新章节区（简介与章节之间）：最新10话横向卡片，点击在线阅读。
+  /// 仅当当前分组章节 > 10 时显示；不参与下载选章（下载走 DownloadChapterSheet 完整列表）。
+  SliverToBoxAdapter _buildLatestChapters() {
+    if (_groups.isEmpty) {
+      return const SliverToBoxAdapter(child: SizedBox.shrink());
+    }
+    final group = _groups[_selectedGroupIndex.clamp(0, _groups.length - 1)];
+    final chapters = group.chapters;
+    if (chapters.length <= 10) {
+      return const SliverToBoxAdapter(child: SizedBox.shrink());
+    }
+    // 主列表已「第1话在前」，末尾即最新；取末尾10个反转为「最新在前」
+    final latest = chapters.sublist(chapters.length - 10).reversed.toList();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final titleColor = isDark ? Colors.white : JellyTheme.textPrimaryLight;
+    final lastReadId = ReadingProgressService()
+        .getProgress(_comic.pathWord)
+        ?.lastChapterId;
+
+    return SliverToBoxAdapter(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                '最新章节',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: titleColor,
+                ),
+              ),
+            ),
+            SizedBox(
+              height: 44,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: latest.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final chapter = latest[index];
+                  final downloaded = DownloadService().isChapterDownloaded(
+                    _comic.pathWord,
+                    chapter.id,
+                  );
+                  final isLastRead = lastReadId == chapter.id;
+                  return Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      OutlinedButton(
+                        onPressed: () => _onChapterTap(chapter),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          minimumSize: const Size(0, 36),
+                          side: BorderSide(
+                            color: isDark ? Colors.white70 : Colors.black38,
+                          ),
+                        ),
+                        child: Text(
+                          chapter.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                      ),
+                      if (isLastRead)
+                        const Positioned(
+                          left: 2,
+                          top: 2,
+                          child: Icon(
+                            Icons.bookmark_rounded,
+                            size: 12,
+                            color: JellyTheme.blue,
+                          ),
+                        ),
+                      if (downloaded)
+                        const Positioned(
+                          right: 2,
+                          top: 2,
+                          child: Icon(
+                            Icons.check_circle,
+                            size: 12,
+                            color: JellyTheme.success,
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   SliverToBoxAdapter _buildChapterSummary() {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final titleColor = isDark ? Colors.white : JellyTheme.textPrimaryLight;

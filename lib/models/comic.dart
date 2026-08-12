@@ -11,6 +11,7 @@ class Comic {
   final double? rating;
   final int? popular;
   final String pathWord;
+  final String? sourceId; // 所属漫画源 id（收藏/书架角标用；旧数据为 null）
   final int? totalChapters;
   final DateTime? updateTime;
 
@@ -26,6 +27,7 @@ class Comic {
     this.rating,
     this.popular,
     required this.pathWord,
+    this.sourceId,
     this.totalChapters,
     this.updateTime,
   });
@@ -144,6 +146,7 @@ class Comic {
           safeString(json['pathWord']) ??
           safeString(json['id']) ??
           '',
+      sourceId: safeString(json['sourceId']),
       totalChapters:
           safeInt(json['total_chapters']) ??
           safeInt(json['chapterCount']) ??
@@ -169,6 +172,7 @@ class Comic {
       'rating': rating,
       'popular': popular,
       'pathWord': pathWord,
+      'sourceId': sourceId,
       'totalChapters': totalChapters,
       'updateTime': updateTime?.toIso8601String(),
     };
@@ -186,6 +190,7 @@ class Comic {
     double? rating,
     int? popular,
     String? pathWord,
+    String? sourceId,
     int? totalChapters,
     DateTime? updateTime,
   }) {
@@ -201,6 +206,7 @@ class Comic {
       rating: rating ?? this.rating,
       popular: popular ?? this.popular,
       pathWord: pathWord ?? this.pathWord,
+      sourceId: sourceId ?? this.sourceId,
       totalChapters: totalChapters ?? this.totalChapters,
       updateTime: updateTime ?? this.updateTime,
     );

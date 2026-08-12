@@ -5,6 +5,7 @@ import 'package:flutter/rendering.dart';
 import 'pages/home_page.dart';
 import 'services/book_download_service.dart';
 import 'services/book_favorites_service.dart';
+import 'services/book_font_service.dart';
 import 'services/peer_transfer_service.dart';
 import 'services/bookshelf_service.dart';
 import 'services/book_reading_progress_service.dart';
@@ -12,11 +13,14 @@ import 'services/book_view_mode.dart';
 import 'services/download_service.dart';
 import 'services/favorites_service.dart';
 import 'services/reading_progress_service.dart';
+import 'services/reader_override_service.dart';
 import 'services/remote_config_service.dart';
 import 'services/settings_service.dart';
 import 'services/theme_switch.dart';
 import 'services/view_mode.dart';
 import 'services/zlibrary_service.dart';
+import 'source/source_manager.dart';
+import 'source/webview_image_fetcher.dart';
 import 'theme/jelly_theme.dart';
 import 'utils/constants.dart';
 
@@ -24,6 +28,9 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await RemoteConfigService().init();
   await SettingsService().init();
+  await ReaderOverrideService().init();
+  await BookFontService().init();
+  await SourceManager().init();
   await ViewMode().init();
   await BookViewMode().init();
   await FavoritesService().init();
@@ -148,6 +155,8 @@ class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin {
       home: Stack(
         fit: StackFit.expand,
         children: [
+          // 隐藏 WebView（1px，底层）：供 WebViewImageFetcher 后台取图（iframe/懒加载站）
+          WebViewImageFetcher().buildHiddenWebView(),
           RepaintBoundary(key: _boundaryKey, child: const HomePage()),
           if (_animating && _snapshot != null && _origin != null)
             Positioned.fill(

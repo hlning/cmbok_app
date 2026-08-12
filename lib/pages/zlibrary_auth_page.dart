@@ -625,6 +625,8 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
             JellyTheme.textSecondary,
             '未登录内置账号 ${ZlibraryService.builtinDailyLimit} 本/天',
           ),
+          const SizedBox(height: 8),
+          _benefitRow(Icons.push_pin, JellyTheme.textSecondary, '如果有Z站账号不需要注册'),
         ],
       ),
     );

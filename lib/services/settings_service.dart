@@ -15,14 +15,17 @@ void _log(String message) {
 /// 漫画阅读模式：左右翻页（横向逐页）/ 消散（当前页淡出、下一页淡入）/ 拼页（上下连续滚动）
 enum ReadingMode { pageTurn, continuous, dissolve }
 
-/// 图书阅读模式：翻页 / 仿真翻页（卷曲）
-enum BookReadingMode { pageTurn, simulation }
+/// 图书阅读模式：翻页 / 仿真翻页（卷曲） / 覆盖（新页滑入覆盖当前页）
+enum BookReadingMode { pageTurn, simulation, cover }
 
 /// 底部导航 tab 枚举（与导航栏顺序一致）
 enum NavTab { manga, book, bookshelf, favorites, me }
 
 /// 启动默认首页（对应底部导航 tab）
 enum DefaultHomePage { manga, book, bookshelf, favorites, me }
+
+/// 收藏/书架/下载三页默认显示的内容类型
+enum PageDefaultContent { manga, book }
 
 /// NavTab 与 DefaultHomePage 的双向转换辅助（两者值一一对应）
 extension NavTabDefaultHomePageX on NavTab {
@@ -64,10 +67,26 @@ class SettingsService extends ChangeNotifier {
   static const _kBookHorizontalPaddingKey = 'book_h_padding';
   static const _kBookVerticalPaddingKey = 'book_v_padding';
   static const _kBookReadingModeKey = 'book_reading_mode';
+  // 图书正文字体覆盖：null = 跟随阅读模式（仿真→inkReadingKai，否则系统）；
+  // 'system' = 强制系统字体；'inkReadingKai' = 内置楷体；其他 = 用户字体 family。
+  static const _kBookFontFamilyKey = 'book_font_family';
   static const _kNavVisibleTabsKey = 'nav_visible_tabs';
   static const _kNavFloatingKey = 'nav_floating';
   static const _kNavOrderVersionKey =
       'nav_order_version'; // 导航 tab 顺序版本（v2: 书架与收藏互换）
+  static const _kPageTabsFollowNavKey = 'page_tabs_follow_nav';
+  static const _kPageDefaultContentKey = 'page_default_content';
+  // 翻页按钮反转：左点下一页、右点上一页（默认关）
+  static const _kReverseTapKey = 'reader_reverse_tap';
+  // 双页模式：横屏左右并排两页（默认关，仅翻页模式生效）
+  static const _kDoublePageKey = 'reader_double_page';
+  // 阅读信息栏：阅读时角落显示时间/页码/进度等（默认开）
+  static const _kShowReaderHudKey = 'reader_show_hud';
+  // 音量键翻页：阅读时按音量上/下键翻页（默认关，会接管音量键）
+  static const _kVolumeKeyTurnKey = 'reader_volume_key_turn';
+  // 番茄钟：循环次数 / 每轮休息分钟
+  static const _kPomodoroLoopCountKey = 'pomodoro_loop_count';
+  static const _kPomodoroRestMinutesKey = 'pomodoro_rest_minutes';
 
   /// 同时下载量：默认 2，范围 1~5
   static const int minConcurrentChapters = 1;
@@ -83,6 +102,19 @@ class SettingsService extends ChangeNotifier {
   static const int minPreloadImages = 2;
   static const int maxPreloadImages = 10;
   static const int defaultPreloadImages = 5;
+
+  /// 番茄钟：工作时长固定 25 分钟（不可配）
+  static const int pomodoroWorkMinutes = 25;
+
+  /// 番茄钟循环次数：默认 1，范围 1~5
+  static const int minPomodoroLoopCount = 1;
+  static const int maxPomodoroLoopCount = 5;
+  static const int defaultPomodoroLoopCount = 1;
+
+  /// 番茄钟每轮休息分钟：默认 5，范围 1~15
+  static const int minPomodoroRestMinutes = 1;
+  static const int maxPomodoroRestMinutes = 15;
+  static const int defaultPomodoroRestMinutes = 5;
 
   /// 图书排版：字号 / 行距 / 四周边距
   static const double defaultBookFontSize = 18;
@@ -115,8 +147,19 @@ class SettingsService extends ChangeNotifier {
   double _bookLineHeight = defaultBookLineHeight; // 图书行距
   double _bookHorizontalPadding = defaultBookHorizontalPadding; // 图书左右边距
   double _bookVerticalPadding = defaultBookVerticalPadding; // 图书上下边距
+  // 图书正文字体：null = 跟随阅读模式；其他含义见 _kBookFontFamilyKey 注释。
+  String? _bookFontFamily;
   List<NavTab> _visibleNavTabs = NavTab.values.toList(); // 导航栏可见 tab，默认全显示
   bool _navFloating = true; // 导航栏是否悬浮（胶囊型毛玻璃样式），默认开启
+  bool _pageTabsFollowNav = true; // 收藏/书架/下载页 tab 是否跟随导航栏 manga/book 可见性
+  PageDefaultContent _pageDefaultContent =
+      PageDefaultContent.manga; // 收藏/书架/下载页默认显示内容
+  bool _reverseTap = false; // 翻页按钮反转（左下一、右上一）
+  bool _doublePage = false; // 双页模式（横屏左右并排两页）
+  bool _showReaderHud = true; // 阅读信息栏（时间/页码/进度）
+  bool _volumeKeyTurn = false; // 音量键翻页
+  int _pomodoroLoopCount = defaultPomodoroLoopCount; // 番茄钟循环次数
+  int _pomodoroRestMinutes = defaultPomodoroRestMinutes; // 番茄钟每轮休息分钟
 
   int get maxConcurrentChapters => _maxConcurrentChapters;
   int get maxConcurrentImages => _maxConcurrentImages;
@@ -137,8 +180,46 @@ class SettingsService extends ChangeNotifier {
   double get bookLineHeight => _bookLineHeight;
   double get bookHorizontalPadding => _bookHorizontalPadding;
   double get bookVerticalPadding => _bookVerticalPadding;
+  String? get bookFontFamily => _bookFontFamily;
   List<NavTab> get visibleNavTabs => List.unmodifiable(_visibleNavTabs);
   bool get navFloating => _navFloating;
+  bool get pageTabsFollowNav => _pageTabsFollowNav;
+  PageDefaultContent get pageDefaultContent => _pageDefaultContent;
+  bool get reverseTap => _reverseTap;
+  bool get doublePage => _doublePage;
+  bool get showReaderHud => _showReaderHud;
+  bool get volumeKeyTurn => _volumeKeyTurn;
+  int get pomodoroLoopCount => _pomodoroLoopCount;
+  int get pomodoroRestMinutes => _pomodoroRestMinutes;
+
+  /// 收藏/书架/下载三页的有效内容 tab 顺序（受 pageTabsFollowNav + visibleNavTabs 影响）。
+  /// 跟随开关关：[漫画, 图书]；开：取 visibleNavTabs 中的漫画/图书（按固定顺序）；
+  /// 若两者都被隐藏，强制保留默认内容 tab，保证页面始终可用。
+  List<NavTab> effectiveContentTabs() {
+    if (!pageTabsFollowNav) return const [NavTab.manga, NavTab.book];
+    final visible = _visibleNavTabs.toSet();
+    final tabs = <NavTab>[];
+    if (visible.contains(NavTab.manga)) tabs.add(NavTab.manga);
+    if (visible.contains(NavTab.book)) tabs.add(NavTab.book);
+    if (tabs.isEmpty) {
+      tabs.add(
+        pageDefaultContent == PageDefaultContent.manga
+            ? NavTab.manga
+            : NavTab.book,
+      );
+    }
+    return tabs;
+  }
+
+  /// 三页默认 tab index：pageDefaultContent 在有效 tabs 中的位置，不可见则 0。
+  int defaultContentTabIndex() {
+    final tabs = effectiveContentTabs();
+    final want = pageDefaultContent == PageDefaultContent.manga
+        ? NavTab.manga
+        : NavTab.book;
+    final idx = tabs.indexOf(want);
+    return idx >= 0 ? idx : 0;
+  }
 
   /// 图书正文字体由阅读模式派生：仿真翻页用水墨楷体，普通翻页用系统默认。
   /// 切换模式时自动联动，无需独立持久化。
@@ -214,6 +295,16 @@ class SettingsService extends ChangeNotifier {
         minPreloadImages,
         maxPreloadImages,
       );
+      _pomodoroLoopCount = _clamp(
+        prefs.getInt(_kPomodoroLoopCountKey) ?? defaultPomodoroLoopCount,
+        minPomodoroLoopCount,
+        maxPomodoroLoopCount,
+      );
+      _pomodoroRestMinutes = _clamp(
+        prefs.getInt(_kPomodoroRestMinutesKey) ?? defaultPomodoroRestMinutes,
+        minPomodoroRestMinutes,
+        maxPomodoroRestMinutes,
+      );
       _bookFontSize = _clampDouble(
         prefs.getDouble(_kBookFontSizeKey) ?? defaultBookFontSize,
         minBookFontSize,
@@ -235,8 +326,19 @@ class SettingsService extends ChangeNotifier {
         minBookVerticalPadding,
         maxBookVerticalPadding,
       );
+      // 图书正文字体偏好（null/空字符串均视为未设置 = 跟随阅读模式）。
+      final savedFont = prefs.getString(_kBookFontFamilyKey);
+      _bookFontFamily = (savedFont == null || savedFont.isEmpty)
+          ? null
+          : savedFont;
       // 导航栏悬浮开关
       _navFloating = prefs.getBool(_kNavFloatingKey) ?? true;
+      // 当前漫画源
+      _currentSourceId = prefs.getString(_currentSourceKey) ?? 'copymanga';
+      // 禁用漫画源列表
+      _disabledSourceIds = prefs.getStringList(_disabledSourceIdsKey) ?? [];
+      // 漫画源仓库云端 URL
+      _sourceRepoUrl = prefs.getString(_sourceRepoUrlKey) ?? '';
       // 导航栏可见 tab
       final visibleTabNames = prefs.getStringList(_kNavVisibleTabsKey);
       if (visibleTabNames != null && visibleTabNames.isNotEmpty) {
@@ -247,6 +349,18 @@ class SettingsService extends ChangeNotifier {
         }
         _visibleNavTabs = _sanitizeVisibleNavTabs(parsed);
       }
+      // 收藏/书架/下载页 tab 跟随导航栏
+      _pageTabsFollowNav = prefs.getBool(_kPageTabsFollowNavKey) ?? true;
+      final pdcIdx = prefs.getInt(_kPageDefaultContentKey);
+      if (pdcIdx != null &&
+          pdcIdx >= 0 &&
+          pdcIdx < PageDefaultContent.values.length) {
+        _pageDefaultContent = PageDefaultContent.values[pdcIdx];
+      }
+      _reverseTap = prefs.getBool(_kReverseTapKey) ?? false;
+      _doublePage = prefs.getBool(_kDoublePageKey) ?? false;
+      _showReaderHud = prefs.getBool(_kShowReaderHudKey) ?? true;
+      _volumeKeyTurn = prefs.getBool(_kVolumeKeyTurnKey) ?? false;
       // 若默认首页不在可见列表中，自动修正到第一个可见
       if (!_visibleNavTabs.any((t) => t == _defaultHomePage.toNavTab())) {
         _defaultHomePage = _visibleNavTabs.first.toDefaultHomePage();
@@ -256,7 +370,8 @@ class SettingsService extends ChangeNotifier {
         '漫画阅读模式=$_readingMode, 图书阅读模式=$_bookReadingMode, 保存路径=${_downloadSavePath ?? "默认"}, '
         '合并EPUB=$_mergeChapterToEpub, 保留图片=$_keepImagesAfterEpub, '
         '默认首页=$_defaultHomePage, 内置账号=$_useBuiltinAccount, 启动检查更新=$_checkUpdateOnStartup, 暗色模式=$_isDarkMode, 跟随系统=$_themeFollowSystem, 预加载=$_preloadImageCount, '
-        '图书排版: 字号=$_bookFontSize 行距=$_bookLineHeight 左右边距=$_bookHorizontalPadding 上下边距=$_bookVerticalPadding',
+        '图书排版: 字号=$_bookFontSize 行距=$_bookLineHeight 左右边距=$_bookHorizontalPadding 上下边距=$_bookVerticalPadding, '
+        '翻页反转=$_reverseTap, 双页=$_doublePage, 信息栏=$_showReaderHud, 音量键翻页=$_volumeKeyTurn',
       );
     } catch (e) {
       _log('加载设置失败: $e');
@@ -283,6 +398,38 @@ class SettingsService extends ChangeNotifier {
       await prefs.setInt(_chaptersKey, clamped);
     } catch (e) {
       _log('保存同时下载量失败: $e');
+    }
+  }
+
+  /// 设置番茄钟循环次数（自动 clamp）
+  Future<void> setPomodoroLoopCount(int value) async {
+    final clamped = _clamp(value, minPomodoroLoopCount, maxPomodoroLoopCount);
+    if (_pomodoroLoopCount == clamped) return;
+    _pomodoroLoopCount = clamped;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kPomodoroLoopCountKey, clamped);
+    } catch (e) {
+      _log('保存番茄钟循环次数失败: $e');
+    }
+  }
+
+  /// 设置番茄钟每轮休息分钟（自动 clamp）
+  Future<void> setPomodoroRestMinutes(int value) async {
+    final clamped = _clamp(
+      value,
+      minPomodoroRestMinutes,
+      maxPomodoroRestMinutes,
+    );
+    if (_pomodoroRestMinutes == clamped) return;
+    _pomodoroRestMinutes = clamped;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kPomodoroRestMinutesKey, clamped);
+    } catch (e) {
+      _log('保存番茄钟休息分钟失败: $e');
     }
   }
 
@@ -317,7 +464,7 @@ class SettingsService extends ChangeNotifier {
     }
   }
 
-  /// 设置图书阅读模式（翻页 / 仿真）
+  /// 设置图书阅读模式（翻页 / 仿真 / 覆盖）
   Future<void> setBookReadingMode(BookReadingMode mode) async {
     if (_bookReadingMode == mode) return;
     _bookReadingMode = mode;
@@ -525,6 +672,24 @@ class SettingsService extends ChangeNotifier {
     }
   }
 
+  /// 设置：图书正文字体（value 同 [bookFontFamily] 约定）。
+  Future<void> setBookFontFamily(String? value) async {
+    final normalized = (value == null || value.isEmpty) ? null : value;
+    if (_bookFontFamily == normalized) return;
+    _bookFontFamily = normalized;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (normalized == null) {
+        await prefs.remove(_kBookFontFamilyKey);
+      } else {
+        await prefs.setString(_kBookFontFamilyKey, normalized);
+      }
+    } catch (e) {
+      _log('保存图书字体失败: $e');
+    }
+  }
+
   /// 设置导航栏可见 tab
   /// - "我的"始终显示
   /// - 漫画/图书/收藏/书架至少保留一个
@@ -550,6 +715,84 @@ class SettingsService extends ChangeNotifier {
       await prefs.setInt(_defaultHomeKey, _defaultHomePage.index);
     } catch (e) {
       _log('保存导航栏可见 tab 失败: $e');
+    }
+  }
+
+  /// 设置：收藏/书架/下载页 tab 是否跟随导航栏 manga/book 可见性
+  Future<void> setPageTabsFollowNav(bool value) async {
+    if (_pageTabsFollowNav == value) return;
+    _pageTabsFollowNav = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kPageTabsFollowNavKey, value);
+    } catch (e) {
+      _log('保存页面tab跟随导航栏失败: $e');
+    }
+  }
+
+  /// 设置：收藏/书架/下载页默认显示内容（漫画/图书）
+  Future<void> setPageDefaultContent(PageDefaultContent value) async {
+    if (_pageDefaultContent == value) return;
+    _pageDefaultContent = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kPageDefaultContentKey, value.index);
+    } catch (e) {
+      _log('保存页面默认显示内容失败: $e');
+    }
+  }
+
+  /// 设置：翻页按钮反转（左点下一页、右点上一页）
+  Future<void> setReverseTap(bool value) async {
+    if (_reverseTap == value) return;
+    _reverseTap = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kReverseTapKey, value);
+    } catch (e) {
+      _log('保存翻页反转开关失败: $e');
+    }
+  }
+
+  /// 设置：双页模式（横屏左右并排两页，仅翻页模式生效）
+  Future<void> setDoublePage(bool value) async {
+    if (_doublePage == value) return;
+    _doublePage = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kDoublePageKey, value);
+    } catch (e) {
+      _log('保存双页模式开关失败: $e');
+    }
+  }
+
+  /// 设置：阅读信息栏（时间/页码/进度）
+  Future<void> setShowReaderHud(bool value) async {
+    if (_showReaderHud == value) return;
+    _showReaderHud = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kShowReaderHudKey, value);
+    } catch (e) {
+      _log('保存阅读信息栏开关失败: $e');
+    }
+  }
+
+  /// 设置：音量键翻页（阅读时按音量上/下键翻页）
+  Future<void> setVolumeKeyTurn(bool value) async {
+    if (_volumeKeyTurn == value) return;
+    _volumeKeyTurn = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kVolumeKeyTurnKey, value);
+    } catch (e) {
+      _log('保存音量键翻页开关失败: $e');
     }
   }
 
@@ -586,6 +829,56 @@ class SettingsService extends ChangeNotifier {
       await prefs.setBool(_kNavFloatingKey, value);
     } catch (e) {
       _log('保存导航栏悬浮开关失败: $e');
+    }
+  }
+
+  // === 漫画源 ===
+  static const _currentSourceKey = 'current_source_id';
+  String _currentSourceId = 'copymanga'; // 当前漫画源 id（默认拷贝漫画）
+  String get currentSourceId => _currentSourceId;
+
+  /// 设置当前漫画源 id
+  Future<void> setCurrentSourceId(String value) async {
+    if (_currentSourceId == value) return;
+    _currentSourceId = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_currentSourceKey, value);
+    } catch (e) {
+      _log('保存当前漫画源失败: $e');
+    }
+  }
+
+  static const _disabledSourceIdsKey = 'disabled_source_ids';
+  List<String> _disabledSourceIds = []; // 禁用漫画源 id 列表（启用 = 不在此列表）
+  List<String> get disabledSourceIds => _disabledSourceIds;
+
+  /// 设置禁用漫画源 id 列表
+  Future<void> setDisabledSourceIds(List<String> value) async {
+    _disabledSourceIds = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_disabledSourceIdsKey, value);
+    } catch (e) {
+      _log('保存禁用源列表失败: $e');
+    }
+  }
+
+  static const _sourceRepoUrlKey = 'source_repo_url';
+  String _sourceRepoUrl = ''; // 漫画源仓库云端 URL（后续拉取用）
+  String get sourceRepoUrl => _sourceRepoUrl;
+
+  /// 设置漫画源仓库云端 URL
+  Future<void> setSourceRepoUrl(String value) async {
+    _sourceRepoUrl = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_sourceRepoUrlKey, value);
+    } catch (e) {
+      _log('保存漫画源仓库URL失败: $e');
     }
   }
 

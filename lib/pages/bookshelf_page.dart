@@ -14,7 +14,8 @@ import '../services/book_download_service.dart';
 import '../services/book_favorites_service.dart';
 import '../services/book_reading_progress_service.dart';
 import '../services/bookshelf_service.dart';
-import '../services/comic_api.dart';
+import '../source/adapter.dart';
+import '../source/source_manager.dart';
 import '../services/download_service.dart';
 import '../services/reading_progress_service.dart';
 import '../services/settings_service.dart';
@@ -74,7 +75,17 @@ class _BookshelfPageState extends State<BookshelfPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    final tabs = SettingsService().effectiveContentTabs();
+    final initialIdx = min(
+      SettingsService().defaultContentTabIndex(),
+      tabs.length - 1,
+    );
+    _tabController = TabController(
+      length: tabs.length,
+      vsync: this,
+      initialIndex: initialIdx,
+    );
+    SettingsService().addListener(_onContentTabsChanged);
     _comicScrollController.addListener(_onComicScroll);
     _bookScrollController.addListener(_onBookScroll);
     _searchAnim = AnimationController(
@@ -100,6 +111,7 @@ class _BookshelfPageState extends State<BookshelfPage>
 
   @override
   void dispose() {
+    SettingsService().removeListener(_onContentTabsChanged);
     _tabController.dispose();
     _comicScrollController.dispose();
     _bookScrollController.dispose();
@@ -107,6 +119,40 @@ class _BookshelfPageState extends State<BookshelfPage>
     _searchController.dispose();
     super.dispose();
   }
+
+  /// 显示设置变化（跟随导航栏/默认显示/导航栏可见 tab）时，按需重建 TabController
+  void _onContentTabsChanged() {
+    if (!mounted) return;
+    final newLen = SettingsService().effectiveContentTabs().length;
+    if (newLen != _tabController.length) {
+      final oldIndex = _tabController.index;
+      _tabController.dispose();
+      _tabController = TabController(
+        length: newLen,
+        vsync: this,
+        initialIndex: min(oldIndex, newLen - 1),
+      );
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// 当前 tab 是否为漫画（动态 tab 顺序下不依赖固定 index）
+  bool get _isComicTab {
+    final tabs = SettingsService().effectiveContentTabs();
+    final idx = _tabController.index.clamp(0, tabs.length - 1);
+    return tabs[idx] == NavTab.manga;
+  }
+
+  /// 当前 tab 的 NavTab
+  NavTab get _currentTab {
+    final tabs = SettingsService().effectiveContentTabs();
+    final idx = _tabController.index.clamp(0, tabs.length - 1);
+    return tabs[idx];
+  }
+
+  /// 指定 NavTab 在有效 tabs 中的 index（找不到返回 -1）
+  int _indexOfTab(NavTab tab) =>
+      SettingsService().effectiveContentTabs().indexOf(tab);
 
   void _onComicScroll() {
     if (!_comicScrollController.hasClients) return;
@@ -214,9 +260,15 @@ class _BookshelfPageState extends State<BookshelfPage>
       if (shelf != null) {
         setState(() => _currentShelfId = shelf.id);
       } else if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('书架名称已存在')));
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('书架名称已存在'),
+              duration: Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
       }
     }
   }
@@ -250,9 +302,15 @@ class _BookshelfPageState extends State<BookshelfPage>
         result.trim(),
       );
       if (!ok && mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('书架名称已存在')));
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('书架名称已存在'),
+              duration: Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
       }
     }
   }
@@ -387,46 +445,49 @@ class _BookshelfPageState extends State<BookshelfPage>
 
   /// 左滑（下一）：切到下一个书架；已是末书架则切到图书 tab
   void _swipeNext() {
-    final shelves = _visibleShelves(_tabController.index);
+    final shelves = _visibleShelves(_currentTab);
     final idx = shelves.indexWhere((s) => s.id == _currentShelfId);
     if (idx >= 0 && idx < shelves.length - 1) {
       _switchShelf(shelves[idx + 1].id);
-    } else if (_tabController.index == 0) {
-      _switchTab(1);
+    } else if (_isComicTab) {
+      _switchTab(NavTab.book);
     }
   }
 
   /// 右滑（上一）：切到上一个书架；已是首书架则切到漫画 tab
   void _swipePrev() {
-    final shelves = _visibleShelves(_tabController.index);
+    final shelves = _visibleShelves(_currentTab);
     final idx = shelves.indexWhere((s) => s.id == _currentShelfId);
     if (idx > 0) {
       _switchShelf(shelves[idx - 1].id);
-    } else if (_tabController.index == 1) {
-      _switchTab(0);
+    } else if (!_isComicTab) {
+      _switchTab(NavTab.manga);
     }
   }
 
   /// 切换漫画/图书 tab：当前书架在新 tab 有书则保持，否则回第一个（避免空）
-  void _switchTab(int i) {
-    if (_tabController.index == i) return;
+  void _switchTab(NavTab tab) {
+    final idx = _indexOfTab(tab);
+    if (idx < 0 || _tabController.index == idx) return;
     if (_isSelecting) {
       _isSelecting = false;
       _selectedItemIds.clear();
     }
-    _tabController.animateTo(i);
-    final shelves = _visibleShelves(i);
+    _tabController.animateTo(idx);
+    final shelves = _visibleShelves(tab);
     if (shelves.isEmpty) return;
-    final newType = i == 0 ? BookshelfItemType.comic : BookshelfItemType.book;
+    final newType = tab == NavTab.manga
+        ? BookshelfItemType.comic
+        : BookshelfItemType.book;
     if (BookshelfService().countInShelf(_currentShelfId, newType) == 0) {
       _switchShelf(shelves.first.id);
     }
   }
 
   /// 当前 tab 可见的书架列表：漫画 tab 隐藏"本地图书"书架（其内仅 Book 类型）
-  List<Bookshelf> _visibleShelves(int tabIndex) {
+  List<Bookshelf> _visibleShelves(NavTab tab) {
     final shelves = BookshelfService().bookshelves;
-    if (tabIndex == 0) {
+    if (tab == NavTab.manga) {
       return shelves
           .where((s) => s.id != BookshelfService.presetLocal)
           .toList();
@@ -465,6 +526,7 @@ class _BookshelfPageState extends State<BookshelfPage>
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final contentTabs = SettingsService().effectiveContentTabs();
     final tabSegWidth = (MediaQuery.of(context).size.width * 0.5 - 10) / 2;
     return PopScope(
       canPop: !_isSelecting,
@@ -476,6 +538,11 @@ class _BookshelfPageState extends State<BookshelfPage>
             ? AppBar(
                 title: const Text('书架'),
                 actions: [
+                  if (contentTabs.length < 2)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: _buildSearchButton(size: 36),
+                    ),
                   Padding(
                     padding: const EdgeInsets.only(right: 12),
                     child: _buildImportExportButton(),
@@ -493,7 +560,9 @@ class _BookshelfPageState extends State<BookshelfPage>
                 children: [
                   // 顶部标题区
                   SizedBox(
-                    height: widget.showBackButton ? 70 : 105,
+                    height: contentTabs.length < 2
+                        ? (widget.showBackButton ? 0.0 : 50.0)
+                        : (widget.showBackButton ? 70.0 : 105.0),
                     child: Stack(
                       children: [
                         if (!widget.showBackButton)
@@ -517,6 +586,10 @@ class _BookshelfPageState extends State<BookshelfPage>
                                   ),
                                 ),
                                 const Spacer(),
+                                if (contentTabs.length < 2) ...[
+                                  _buildSearchButton(size: 36),
+                                  const SizedBox(width: 8),
+                                ],
                                 _buildImportExportButton(),
                               ],
                             ),
@@ -528,22 +601,42 @@ class _BookshelfPageState extends State<BookshelfPage>
                           child: Row(
                             children: [
                               const Spacer(),
-                              AnimatedBuilder(
-                                animation: _tabController.animation!,
-                                builder: (context, _) => JellySegmentedToggle(
-                                  index: _tabController.animation!.value,
-                                  onChanged: (i) => _switchTab(i),
-                                  segmentWidth: tabSegWidth,
-                                  segments: const [
-                                    JellySegmentData(
-                                      icon: Icons.palette_rounded,
-                                    ),
-                                    JellySegmentData(icon: Icons.book_rounded),
-                                  ],
-                                ),
+                              Builder(
+                                builder: (context) {
+                                  final tabs = SettingsService()
+                                      .effectiveContentTabs();
+                                  if (tabs.length < 2) {
+                                    return const SizedBox.shrink();
+                                  }
+                                  return AnimatedBuilder(
+                                    animation: _tabController.animation!,
+                                    builder: (context, _) =>
+                                        JellySegmentedToggle(
+                                          index:
+                                              _tabController.animation!.value,
+                                          onChanged: (i) {
+                                            if (i >= 0 && i < tabs.length) {
+                                              _switchTab(tabs[i]);
+                                            }
+                                          },
+                                          segmentWidth: tabSegWidth,
+                                          segments: tabs
+                                              .map(
+                                                (t) => JellySegmentData(
+                                                  icon: t == NavTab.manga
+                                                      ? Icons.palette_rounded
+                                                      : Icons.book_rounded,
+                                                ),
+                                              )
+                                              .toList(),
+                                        ),
+                                  );
+                                },
                               ),
-                              const SizedBox(width: 8),
-                              _buildSearchButton(),
+                              if (contentTabs.length >= 2) ...[
+                                const SizedBox(width: 8),
+                                _buildSearchButton(),
+                              ],
                               const Spacer(),
                             ],
                           ),
@@ -562,30 +655,34 @@ class _BookshelfPageState extends State<BookshelfPage>
                       child: TabBarView(
                         controller: _tabController,
                         physics: const NeverScrollableScrollPhysics(),
-                        children: [
-                          _ComicShelfTab(
-                            shelfId: _currentShelfId,
-                            scrollController: _comicScrollController,
-                            showBackToTop: _showComicBackToTop,
-                            onBackToTop: _scrollComicToTop,
-                            session: _session,
-                            displayCount: _comicDisplayCount,
-                            isSelecting: _isSelecting,
-                            selectedIds: _selectedItemIds,
-                            onSelect: _onSelect,
-                          ),
-                          _BookShelfTab(
-                            shelfId: _currentShelfId,
-                            scrollController: _bookScrollController,
-                            showBackToTop: _showBookBackToTop,
-                            onBackToTop: _scrollBookToTop,
-                            session: _session,
-                            displayCount: _bookDisplayCount,
-                            isSelecting: _isSelecting,
-                            selectedIds: _selectedItemIds,
-                            onSelect: _onSelect,
-                          ),
-                        ],
+                        children: SettingsService()
+                            .effectiveContentTabs()
+                            .map(
+                              (t) => t == NavTab.manga
+                                  ? _ComicShelfTab(
+                                      shelfId: _currentShelfId,
+                                      scrollController: _comicScrollController,
+                                      showBackToTop: _showComicBackToTop,
+                                      onBackToTop: _scrollComicToTop,
+                                      session: _session,
+                                      displayCount: _comicDisplayCount,
+                                      isSelecting: _isSelecting,
+                                      selectedIds: _selectedItemIds,
+                                      onSelect: _onSelect,
+                                    )
+                                  : _BookShelfTab(
+                                      shelfId: _currentShelfId,
+                                      scrollController: _bookScrollController,
+                                      showBackToTop: _showBookBackToTop,
+                                      onBackToTop: _scrollBookToTop,
+                                      session: _session,
+                                      displayCount: _bookDisplayCount,
+                                      isSelecting: _isSelecting,
+                                      selectedIds: _selectedItemIds,
+                                      onSelect: _onSelect,
+                                    ),
+                            )
+                            .toList(),
                       ),
                     ),
                   ),
@@ -634,9 +731,7 @@ class _BookshelfPageState extends State<BookshelfPage>
   }
 
   void _selectAll() {
-    final type = _tabController.index == 0
-        ? BookshelfItemType.comic
-        : BookshelfItemType.book;
+    final type = _isComicTab ? BookshelfItemType.comic : BookshelfItemType.book;
     setState(() {
       _selectedItemIds
         ..clear()
@@ -650,9 +745,7 @@ class _BookshelfPageState extends State<BookshelfPage>
 
   Future<void> _removeSelectedFromShelf() async {
     if (_selectedItemIds.isEmpty) return;
-    final type = _tabController.index == 0
-        ? BookshelfItemType.comic
-        : BookshelfItemType.book;
+    final type = _isComicTab ? BookshelfItemType.comic : BookshelfItemType.book;
     final count = _selectedItemIds.length;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -687,9 +780,7 @@ class _BookshelfPageState extends State<BookshelfPage>
 
   Future<void> _moveSelectedToShelf() async {
     if (_selectedItemIds.isEmpty) return;
-    final type = _tabController.index == 0
-        ? BookshelfItemType.comic
-        : BookshelfItemType.book;
+    final type = _isComicTab ? BookshelfItemType.comic : BookshelfItemType.book;
     final target = await _showBatchMoveDialog();
     if (target == null) return;
     for (final itemId in _selectedItemIds.toList()) {
@@ -874,12 +965,16 @@ class _BookshelfPageState extends State<BookshelfPage>
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            '已选 ${_selectedItemIds.length} 项',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
+          Flexible(
+            child: Text(
+              '已选 ${_selectedItemIds.length} 项',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
+              ),
             ),
           ),
           const SizedBox(width: 8),
@@ -910,6 +1005,9 @@ class _BookshelfPageState extends State<BookshelfPage>
             onPressed: _exitSelection,
             icon: const Icon(Icons.close_rounded),
             tooltip: '退出多选',
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            padding: EdgeInsets.zero,
           ),
         ],
       ),
@@ -918,7 +1016,8 @@ class _BookshelfPageState extends State<BookshelfPage>
 
   // ========== 顶部搜索按钮 ==========
 
-  Widget _buildSearchButton() {
+  Widget _buildSearchButton({double size = 50}) {
+    final iconSize = size <= 40 ? 20.0 : 22.0;
     return Material(
       color: JellyTheme.primary,
       shape: const CircleBorder(),
@@ -927,10 +1026,14 @@ class _BookshelfPageState extends State<BookshelfPage>
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: _openSearch,
-        child: const SizedBox(
-          width: 50,
-          height: 50,
-          child: Icon(Icons.search_rounded, color: Colors.white, size: 22),
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: Icon(
+            Icons.search_rounded,
+            color: Colors.white,
+            size: iconSize,
+          ),
         ),
       ),
     );
@@ -1172,7 +1275,10 @@ class _BookshelfPageState extends State<BookshelfPage>
         );
       }
       // 切到图书 tab 并选中"本地图书"书架，让用户立刻看到导入结果
-      if (_tabController.index != 1) _tabController.animateTo(1);
+      final bookIdx = _indexOfTab(NavTab.book);
+      if (bookIdx >= 0 && _tabController.index != bookIdx) {
+        _tabController.animateTo(bookIdx);
+      }
       setState(() => _currentShelfId = shelf.id);
       _ensureShelfChipVisible(shelf.id);
     }
@@ -1438,8 +1544,8 @@ class _BookshelfPageState extends State<BookshelfPage>
     return ListenableBuilder(
       listenable: Listenable.merge([BookshelfService(), _tabController]),
       builder: (context, _) {
-        final shelves = _visibleShelves(_tabController.index);
-        final currentType = _tabController.index == 0
+        final shelves = _visibleShelves(_currentTab);
+        final currentType = _isComicTab
             ? BookshelfItemType.comic
             : BookshelfItemType.book;
 
@@ -1645,10 +1751,12 @@ class _SearchComicTile extends StatelessWidget {
           color: isDark ? Colors.white10 : Colors.black12,
         ),
         clipBehavior: Clip.antiAlias,
-        child: Image.network(
-          comic.cover,
+        child: CachedNetworkImage(
+          imageUrl: comic.cover,
+          httpHeaders: coverHeaders(comic.sourceId),
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) =>
+          placeholder: (_, __) => const SizedBox.shrink(),
+          errorWidget: (_, __, ___) =>
               const Icon(Icons.palette_rounded, size: 20, color: Colors.grey),
         ),
       ),
@@ -1775,6 +1883,19 @@ class _ComicShelfTab extends StatelessWidget {
           shelfId,
           BookshelfItemType.comic,
         );
+        // "正在读"：排序键取"加入书架时间"与"最近阅读时间"的较大者倒序
+        // --新移入(无进度)用 addedAt 兜底排到顶部；有进度按最近阅读归位(继续阅读仍上浮)
+        if (shelfId == BookshelfService.presetReading) {
+          items.sort((a, b) {
+            final ra =
+                ReadingProgressService().getProgress(a.itemId)?.updatedAt ?? 0;
+            final rb =
+                ReadingProgressService().getProgress(b.itemId)?.updatedAt ?? 0;
+            final ka = a.addedAt > ra ? a.addedAt : ra;
+            final kb = b.addedAt > rb ? b.addedAt : rb;
+            return kb.compareTo(ka);
+          });
+        }
         final entries = <_ShelfEntry>[];
         var i = 0;
         for (final item in items.take(displayCount)) {
@@ -1804,6 +1925,13 @@ class _ComicShelfTab extends StatelessWidget {
               progress = null;
               progressLabel = null;
             }
+            // 漫画源角标：优先用书架快照里的漫画源（手动加入书架即带源），
+            // 下载记录兜底（旧数据 meta 无 sourceId 时）；两者都无则不显示
+            final sourceId =
+                c.sourceId ?? DownloadService().sourceIdForComic(c.pathWord);
+            final sourceLabel = sourceId == null
+                ? null
+                : SourceManager().getSource(sourceId)?.name;
             entries.add(
               _ShelfEntry(
                 id: c.id,
@@ -1817,6 +1945,8 @@ class _ComicShelfTab extends StatelessWidget {
                 meta: item.meta,
                 progress: progress,
                 progressLabel: progressLabel,
+                sourceLabel: sourceLabel,
+                sourceId: sourceId,
               ),
             );
           }
@@ -1986,17 +2116,27 @@ class _ComicShelfTab extends StatelessWidget {
       ),
     );
     try {
-      final result = await ComicApi().getComicDetailAndChapters(comic.pathWord);
+      // 优先用漫画自身所属源（书架含多源漫画，当前选中源未必匹配）；
+      // 旧数据无 sourceId 时兜底当前源
+      final source = (comic.sourceId != null && comic.sourceId!.isNotEmpty)
+          ? (SourceManager().getSource(comic.sourceId!) ??
+                SourceManager().current)
+          : SourceManager().current;
+      final details = await source.getMangaDetailsAndChapters(
+        comicToCManga(comic, source.id),
+      );
+      final result = (
+        comic: cmangaToComic(details.manga),
+        groups: cchaptersToGroups(details.chapters),
+      );
       rootNav.pop(); // 关 loading
       if (!context.mounted) return;
       final groups = result.groups;
-      // 章节按展示排序键统一排序，与详情页/下载页/离线阅读器顺序保持一致
+      // 章节按源站原始 order 排序，方向由源决定，统一「第1话在前」
       for (final g in groups) {
         g.chapters.sort(
-          (a, b) => chapterDisplaySortKey(
-            a.title,
-            a.order,
-          ).compareTo(chapterDisplaySortKey(b.title, b.order)),
+          (a, b) =>
+              chapterCompare(a.order, b.order, source.chapterOrderDescending),
         );
       }
       // 起始章节：续读章节；无记录则第一章（order 最小）
@@ -2018,9 +2158,15 @@ class _ComicShelfTab extends StatelessWidget {
       start ??= _firstChapter(groups);
       if (start == null) {
         if (!context.mounted) return;
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('暂无可读章节')));
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('暂无可读章节'),
+              duration: Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
         return;
       }
       final startChapter = start;
@@ -2039,21 +2185,25 @@ class _ComicShelfTab extends StatelessWidget {
     } catch (e) {
       rootNav.pop(); // 关 loading
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('加载失败: $e')));
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('加载失败: $e'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
     }
   }
 
-  /// 全部分组中 order 最小的章节（第一章）；无则 null
+  /// 排序后首个非空分组的第一章（与详情页默认显示的第一章一致）。
+  /// 不按 order 数值取最小，因为 descending 源（order 大者=第1话）取最小会落到最后一话。
   static ComicChapter? _firstChapter(List<ChapterGroup> groups) {
-    ComicChapter? first;
     for (final g in groups) {
-      for (final ch in g.chapters) {
-        if (first == null || ch.order < first.order) first = ch;
-      }
+      if (g.chapters.isNotEmpty) return g.chapters.first;
     }
-    return first;
+    return null;
   }
 }
 
@@ -2096,6 +2246,21 @@ class _BookShelfTab extends StatelessWidget {
           shelfId,
           BookshelfItemType.book,
         );
+        // "正在读"：排序键取"加入书架时间"与"最近阅读时间"的较大者倒序
+        // --新移入(无进度)用 addedAt 兜底排到顶部；有进度按最近阅读归位(继续阅读仍上浮)
+        if (shelfId == BookshelfService.presetReading) {
+          items.sort((a, b) {
+            final ra =
+                BookReadingProgressService().getProgress(a.itemId)?.updatedAt ??
+                0;
+            final rb =
+                BookReadingProgressService().getProgress(b.itemId)?.updatedAt ??
+                0;
+            final ka = a.addedAt > ra ? a.addedAt : ra;
+            final kb = b.addedAt > rb ? b.addedAt : rb;
+            return kb.compareTo(ka);
+          });
+        }
         // 建 id -> Book 索引，消除每项 firstWhere 的 O(n×m)
         final bookMap = {for (final b in BookFavoritesService().books) b.id: b};
         final entries = <_ShelfEntry>[];
@@ -2209,6 +2374,8 @@ class _ShelfEntry {
   final double? progress; // 阅读进度 0~1，null 表示无
   final String? progressLabel; // 无下载但在线阅读时的文字徽标
   final String? formatLabel; // 图书格式角标（EPUB/MOBI/PDF…），漫画为 null
+  final String? sourceLabel; // 漫画下载源名角标（如「拷贝漫画」），图书/未下载为 null
+  final String? sourceId; // 漫画所属源 id（封面防盗链头用），图书为 null
 
   _ShelfEntry({
     required this.id,
@@ -2223,6 +2390,8 @@ class _ShelfEntry {
     this.progress,
     this.progressLabel,
     this.formatLabel,
+    this.sourceLabel,
+    this.sourceId,
   });
 }
 
@@ -2292,6 +2461,8 @@ class _BookshelfRow extends StatelessWidget {
               progress: e.progress,
               progressLabel: e.progressLabel,
               formatLabel: e.formatLabel,
+              sourceLabel: e.sourceLabel,
+              sourceId: e.sourceId,
               isSelecting: isSelecting,
               selected: selectedIds.contains(e.itemId),
             ),
@@ -2379,6 +2550,8 @@ class _ShelfCover extends StatefulWidget {
   final double? progress;
   final String? progressLabel;
   final String? formatLabel;
+  final String? sourceLabel;
+  final String? sourceId; // 封面防盗链头用
   final bool isSelecting;
   final bool selected;
 
@@ -2390,6 +2563,8 @@ class _ShelfCover extends StatefulWidget {
     this.progress,
     this.progressLabel,
     this.formatLabel,
+    this.sourceLabel,
+    this.sourceId,
     this.isSelecting = false,
     this.selected = false,
   });
@@ -2461,7 +2636,8 @@ class _ShelfCoverState extends State<_ShelfCover> {
                   left: 4,
                   child: JellySelectBadge(selected: widget.selected),
                 ),
-              if (!widget.isSelecting && widget.formatLabel != null)
+              if (!widget.isSelecting &&
+                  (widget.formatLabel != null || widget.sourceLabel != null))
                 Positioned(
                   top: 4,
                   left: 4,
@@ -2476,7 +2652,7 @@ class _ShelfCoverState extends State<_ShelfCover> {
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: Text(
-                      widget.formatLabel!,
+                      widget.formatLabel ?? widget.sourceLabel!,
                       style: const TextStyle(
                         fontSize: 9,
                         color: Colors.white,
@@ -2524,6 +2700,7 @@ class _ShelfCoverState extends State<_ShelfCover> {
     if (url.startsWith('http://') || url.startsWith('https://')) {
       return CachedNetworkImage(
         imageUrl: url,
+        httpHeaders: coverHeaders(widget.sourceId),
         fit: BoxFit.cover,
         placeholder: (c, u) => _buildPlaceholder(isDark),
         errorWidget: (c, u, e) => _buildPlaceholder(isDark),

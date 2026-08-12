@@ -59,8 +59,18 @@ class _FavoritesPageState extends State<FavoritesPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    final tabs = SettingsService().effectiveContentTabs();
+    final initialIdx = min(
+      SettingsService().defaultContentTabIndex(),
+      tabs.length - 1,
+    );
+    _tabController = TabController(
+      length: tabs.length,
+      vsync: this,
+      initialIndex: initialIdx,
+    );
     _tabController.addListener(_onTabChanged);
+    SettingsService().addListener(_onContentTabsChanged);
     _searchAnim = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 300),
@@ -77,13 +87,60 @@ class _FavoritesPageState extends State<FavoritesPage>
     }
   }
 
+  /// 显示设置变化（跟随导航栏/默认显示/导航栏可见 tab）时，按需重建 TabController
+  void _onContentTabsChanged() {
+    if (!mounted) return;
+    final newLen = SettingsService().effectiveContentTabs().length;
+    if (newLen != _tabController.length) {
+      final oldIndex = _tabController.index;
+      _tabController.removeListener(_onTabChanged);
+      _tabController.dispose();
+      _tabController = TabController(
+        length: newLen,
+        vsync: this,
+        initialIndex: min(oldIndex, newLen - 1),
+      );
+      _tabController.addListener(_onTabChanged);
+    }
+    setState(() {});
+  }
+
+  /// 当前 tab 是否为漫画（动态 tab 顺序下不依赖固定 index）
+  bool get _isComicTab {
+    final tabs = SettingsService().effectiveContentTabs();
+    final idx = _tabController.index.clamp(0, tabs.length - 1);
+    return tabs[idx] == NavTab.manga;
+  }
+
   @override
   void dispose() {
+    SettingsService().removeListener(_onContentTabsChanged);
     _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     _searchAnim.dispose();
     _favSearchController.dispose();
     super.dispose();
+  }
+
+  Widget _buildSearchButton({double size = 50}) {
+    final iconSize = size <= 40 ? 20.0 : 22.0;
+    return Material(
+      color: JellyTheme.primary,
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: _openSearch,
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: Icon(
+            Icons.search_rounded,
+            color: Colors.white,
+            size: iconSize,
+          ),
+        ),
+      ),
+    );
   }
 
   void _openSearch() {
@@ -118,6 +175,7 @@ class _FavoritesPageState extends State<FavoritesPage>
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final contentTabs = SettingsService().effectiveContentTabs();
     // tab 总宽 = 屏幕一半：段宽*2 + 左右各5内边距 = 屏幕宽/2
     final tabSegWidth = (MediaQuery.of(context).size.width * 0.5 - 10) / 2;
     return PopScope(
@@ -126,7 +184,18 @@ class _FavoritesPageState extends State<FavoritesPage>
         if (!didPop && _isSelecting) _exitSelection();
       },
       child: Scaffold(
-        appBar: widget.showBackButton ? AppBar(title: const Text('收藏')) : null,
+        appBar: widget.showBackButton
+            ? AppBar(
+                title: const Text('收藏'),
+                actions: [
+                  if (contentTabs.length < 2)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 12),
+                      child: _buildSearchButton(size: 36),
+                    ),
+                ],
+              )
+            : null,
         body: Stack(
           children: [
             Column(
@@ -136,7 +205,9 @@ class _FavoritesPageState extends State<FavoritesPage>
                   top: !widget.showBackButton,
                   bottom: false,
                   child: SizedBox(
-                    height: widget.showBackButton ? 70 : 105,
+                    height: contentTabs.length < 2
+                        ? (widget.showBackButton ? 0.0 : 50.0)
+                        : (widget.showBackButton ? 70.0 : 105.0),
                     child: Stack(
                       children: [
                         // 标题：左上角，间距小（AppBar 模式下由 AppBar 承担）
@@ -144,15 +215,23 @@ class _FavoritesPageState extends State<FavoritesPage>
                           Positioned(
                             top: 6,
                             left: 16,
-                            child: Text(
-                              '收藏',
-                              style: TextStyle(
-                                fontSize: 22,
-                                fontWeight: FontWeight.bold,
-                                color: isDark
-                                    ? Colors.white
-                                    : JellyTheme.textPrimaryLight,
-                              ),
+                            right: 16,
+                            child: Row(
+                              children: [
+                                Text(
+                                  '收藏',
+                                  style: TextStyle(
+                                    fontSize: 22,
+                                    fontWeight: FontWeight.bold,
+                                    color: isDark
+                                        ? Colors.white
+                                        : JellyTheme.textPrimaryLight,
+                                  ),
+                                ),
+                                const Spacer(),
+                                if (contentTabs.length < 2)
+                                  _buildSearchButton(size: 36),
+                              ],
                             ),
                           ),
                         // 控件组：水平居中，间距大（往下错开，层次感）
@@ -163,38 +242,29 @@ class _FavoritesPageState extends State<FavoritesPage>
                           child: Row(
                             children: [
                               const Spacer(),
-                              AnimatedBuilder(
-                                animation: _tabController.animation!,
-                                builder: (context, _) => JellySegmentedToggle(
-                                  index: _tabController.animation!.value,
-                                  onChanged: (i) => _tabController.animateTo(i),
-                                  segmentWidth: tabSegWidth,
-                                  segments: const [
-                                    JellySegmentData(
-                                      icon: Icons.palette_rounded,
-                                    ),
-                                    JellySegmentData(icon: Icons.book_rounded),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Material(
-                                color: JellyTheme.primary,
-                                shape: const CircleBorder(),
-                                clipBehavior: Clip.antiAlias,
-                                child: InkWell(
-                                  onTap: _openSearch,
-                                  child: const SizedBox(
-                                    width: 50,
-                                    height: 50,
-                                    child: Icon(
-                                      Icons.search_rounded,
-                                      color: Colors.white,
-                                      size: 22,
-                                    ),
+                              if (contentTabs.length >= 2)
+                                AnimatedBuilder(
+                                  animation: _tabController.animation!,
+                                  builder: (context, _) => JellySegmentedToggle(
+                                    index: _tabController.animation!.value,
+                                    onChanged: (i) =>
+                                        _tabController.animateTo(i),
+                                    segmentWidth: tabSegWidth,
+                                    segments: contentTabs
+                                        .map(
+                                          (t) => JellySegmentData(
+                                            icon: t == NavTab.manga
+                                                ? Icons.palette_rounded
+                                                : Icons.book_rounded,
+                                          ),
+                                        )
+                                        .toList(),
                                   ),
                                 ),
-                              ),
+                              if (contentTabs.length >= 2) ...[
+                                const SizedBox(width: 8),
+                                _buildSearchButton(),
+                              ],
                               const Spacer(),
                             ],
                           ),
@@ -206,19 +276,22 @@ class _FavoritesPageState extends State<FavoritesPage>
                 Expanded(
                   child: TabBarView(
                     controller: _tabController,
-                    children: [
-                      _ComicFavoritesTab(
-                        isActive: widget.isActive,
-                        isSelecting: _isSelecting,
-                        selectedIds: _selectedIds,
-                        onSelect: _onSelect,
-                      ),
-                      _BookFavoritesTab(
-                        isSelecting: _isSelecting,
-                        selectedIds: _selectedIds,
-                        onSelect: _onSelect,
-                      ),
-                    ],
+                    children: contentTabs
+                        .map(
+                          (t) => t == NavTab.manga
+                              ? _ComicFavoritesTab(
+                                  isActive: widget.isActive,
+                                  isSelecting: _isSelecting,
+                                  selectedIds: _selectedIds,
+                                  onSelect: _onSelect,
+                                )
+                              : _BookFavoritesTab(
+                                  isSelecting: _isSelecting,
+                                  selectedIds: _selectedIds,
+                                  onSelect: _onSelect,
+                                ),
+                        )
+                        .toList(),
                   ),
                 ),
               ],
@@ -264,7 +337,7 @@ class _FavoritesPageState extends State<FavoritesPage>
   }
 
   void _selectAll() {
-    final isComic = _tabController.index == 0;
+    final isComic = _isComicTab;
     setState(() {
       _selectedIds
         ..clear()
@@ -278,7 +351,7 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   Future<void> _removeSelected() async {
     if (_selectedIds.isEmpty) return;
-    final isComic = _tabController.index == 0;
+    final isComic = _isComicTab;
     final count = _selectedIds.length;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -323,12 +396,16 @@ class _FavoritesPageState extends State<FavoritesPage>
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            '已选 ${_selectedIds.length} 项',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
+          Flexible(
+            child: Text(
+              '已选 ${_selectedIds.length} 项',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
+              ),
             ),
           ),
           const SizedBox(width: 12),
@@ -350,6 +427,9 @@ class _FavoritesPageState extends State<FavoritesPage>
             onPressed: _exitSelection,
             icon: const Icon(Icons.close_rounded),
             tooltip: '退出多选',
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            padding: EdgeInsets.zero,
           ),
         ],
       ),
@@ -734,6 +814,7 @@ class _ComicFavoritesTabState extends State<_ComicFavoritesTab> {
                                       ? () => widget.onSelect(comic.id)
                                       : () => _openDetail(context, comic),
                                   onLongPress: () => widget.onSelect(comic.id),
+                                  showSourceBadge: true,
                                 )
                               : JellyComicListTile(
                                   comic: comic,
@@ -742,6 +823,7 @@ class _ComicFavoritesTabState extends State<_ComicFavoritesTab> {
                                       ? () => widget.onSelect(comic.id)
                                       : () => _openDetail(context, comic),
                                   onLongPress: () => widget.onSelect(comic.id),
+                                  showSourceBadge: true,
                                 );
                           return StaggeredEntrance(
                             key: ValueKey('${_session}_${comic.id}'),

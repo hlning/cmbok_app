@@ -66,6 +66,9 @@ class BookReadingProgressService extends ChangeNotifier {
 
   final Map<String, BookReadingProgress> _map = {};
 
+  /// recordBlock 节流时间戳：翻页时最多 1 秒通知一次，避免快速翻页频繁重建书架
+  int _lastBlockNotifyAt = 0;
+
   /// 初始化：从本地加载
   Future<void> init() async {
     try {
@@ -143,20 +146,23 @@ class BookReadingProgressService extends ChangeNotifier {
   /// recordBlock 故意不 notify，需在合适时机手动触发。
   void notifyProgressChanged() => notifyListeners();
 
-  /// 记录续读 block 索引。仅持久化，不 notifyListeners，
-  /// 避免频繁滚动/翻页造成监听方过度重建（图书卡片无需响应阅读进度）。
+  /// 记录续读 block 索引并持久化。[notify]=true 时按节流策略通知书架重排
+  /// （翻页时书架在阅读器后台不可见，静默重建重排，退出时即已为新排序）。
+  /// 节流：最多 1 秒通知一次，避免快速翻页频繁重建；dispose 兜底落盘传 false 不通知。
   void recordBlock(
     String bookId,
     int blockIndex,
     int pageIndex,
-    int pageTotal,
-  ) {
+    int pageTotal, {
+    bool notify = true,
+  }) {
     final existing = _map[bookId];
     if (existing != null &&
         existing.blockIndex == blockIndex &&
         existing.pageIndex == pageIndex &&
-        existing.pageTotal == pageTotal)
+        existing.pageTotal == pageTotal) {
       return;
+    }
     _map[bookId] = BookReadingProgress(
       blockIndex: blockIndex,
       pageIndex: pageIndex,
@@ -164,6 +170,13 @@ class BookReadingProgressService extends ChangeNotifier {
       updatedAt: DateTime.now().millisecondsSinceEpoch,
     );
     _persist();
+    if (notify) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (now - _lastBlockNotifyAt >= 1000) {
+        _lastBlockNotifyAt = now;
+        notifyListeners();
+      }
+    }
   }
 
   /// 清除某本图书的阅读进度（删除下载时调用）

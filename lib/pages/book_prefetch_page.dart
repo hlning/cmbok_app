@@ -12,7 +12,7 @@ import '../services/book_page_cache_service.dart';
 import '../services/book_parser.dart';
 import '../services/book_paginator.dart';
 import '../services/book_reading_progress_service.dart';
-import '../services/settings_service.dart';
+import '../services/reader_override_service.dart';
 import '../theme/jelly_theme.dart';
 import 'book_reader_page.dart';
 
@@ -30,8 +30,10 @@ class BookPrefetchPage extends StatefulWidget {
 class _BookPrefetchPageState extends State<BookPrefetchPage> {
   BookContent? _content;
   // 解析时同 isolate 解出的图片宽高比，供 _paginate 复用，
-  // 省一次跨 isolate 传 images（解析缓存命中时为空，仍走 _decodeImageRatios）
+  // 省一次跨 isolate 传 images（解析缓存命中时为空，仍走 _decodeImageInfo）
   Map<String, double>? _ratios;
+  // 同上，图片自然像素宽度（行内小图标判定用）
+  Map<String, int>? _naturalWidths;
   bool _started = false;
   bool _disposed = false;
   String _phase = '加载中...';
@@ -86,21 +88,25 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
       // 深拷贝（图片多的大书进入卡顿主因）
       BookContent content;
       Map<String, double>? ratios;
+      Map<String, int>? naturalWidths;
       if (ext == 'pdf') {
         // PDF 走主线程解析（PdfRenderer channel 不可在 isolate）；
         // 比例已在 ImageBlock.aspectRatio，无需解码图片
         content = await BookParser.parsePdf(file);
         ratios = const {};
+        naturalWidths = const {};
       } else if (ext == 'txt') {
         content = await compute(BookParser.parseTxt, file);
       } else if (ext == 'mobi' || ext == 'azw' || ext == 'azw3') {
         final r = await compute(BookParser.parseMobiWithRatios, file);
         content = r.content;
         ratios = r.ratios;
+        naturalWidths = r.naturalWidths;
       } else {
         final r = await compute(BookParser.parseEpubWithRatios, file);
         content = r.content;
         ratios = r.ratios;
+        naturalWidths = r.naturalWidths;
       }
       _log(
         '解析 $ext ${content.flatBlocks.length} 块 ${sw.elapsedMilliseconds}ms',
@@ -109,6 +115,7 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
       setState(() {
         _content = content;
         _ratios = ratios;
+        _naturalWidths = naturalWidths;
       });
       // 后台写解析缓存，不阻塞分页；失败忽略。PDF 不写（imageLoader 不可序列化）
       if (ext != 'pdf') {
@@ -126,13 +133,24 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
   }
 
   BookTypography _typoFromSettings() {
-    final s = SettingsService();
+    // 与阅读器 _typoFromSettings 完全一致：独立设置开启时取 per-item 覆盖，
+    // 否则回退全局。确保 prefetch 与 reader 生成的分页缓存 key 一致，
+    // 否则独立设置开启时 prefetch 写入的缓存 key 与 reader 计算的永远不同，
+    // reader 进入后判 miss 触发前台重排且写出的缓存也命不中（等于废缓存）。
+    final o = ReaderOverrideService();
+    final bookId = widget.task.bookId;
+    final mode = o.effectiveBookMode(bookId);
     return BookTypography(
-      fontSize: s.bookFontSize,
-      lineHeight: s.bookLineHeight,
-      padding: s.bookHorizontalPadding,
-      verticalPadding: s.bookVerticalPadding,
-      fontFamily: s.bookFontFamilyName,
+      fontSize: o.effectiveBookFontSize(bookId),
+      lineHeight: o.effectiveBookLineHeight(bookId),
+      padding: o.effectiveBookHorizontalPadding(bookId),
+      verticalPadding: o.effectiveBookVerticalPadding(bookId),
+      // 字体族：用户字体偏好优先（含 'system' 哨兵），其次由模式派生。
+      // 仿真 → inkReadingKai，普通翻页 → null（系统默认），与阅读器一致。
+      fontFamily: ReaderOverrideService.resolveFontFamily(
+        o.effectiveBookFontFamily(bookId),
+        mode,
+      ),
       // 与阅读器一致：inheritedStyle 取渲染端 defaultTextStyle（Scaffold 内 Material
       // 注入的 theme.textTheme.bodyMedium），度量 merge 它以消除 letterSpacing 等
       // 残留字段差异（meas<col）。
@@ -189,6 +207,7 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
           viewportHeight: textVpH,
           typo: typo,
           imageAspectRatios: cached.ratios,
+          imageNaturalWidths: cached.naturalWidths,
           chapterStarts: starts.toSet(),
           resumeBlockIndex: cached.resumeBlockIndex!,
           cur: cached.cur ?? const [],
@@ -203,6 +222,7 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
             content: content,
             pages: cached.pages,
             ratios: cached.ratios,
+            naturalWidths: cached.naturalWidths,
             key: key,
             fingerprint: fp,
             paginator: paginator,
@@ -216,6 +236,7 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
           content: content,
           pages: cached.pages,
           ratios: cached.ratios,
+          naturalWidths: cached.naturalWidths,
           key: key,
           fingerprint: fp,
         ),
@@ -227,13 +248,17 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
     // 复用解析时同 isolate 解出的 _ratios（若有），省一次跨 isolate 传 images；
     // 解析缓存命中时 _ratios 为空，仍单独解码
     Map<String, double> ratios;
+    Map<String, int> naturalWidths;
     if (_ratios != null) {
       ratios = _ratios!;
+      naturalWidths = _naturalWidths ?? const {};
       _log('图片宽高比复用解析结果 ${ratios.length} 张');
     } else {
       if (mounted) setState(() => _phase = '解码图片...');
       final swDecode = Stopwatch()..start();
-      ratios = await _decodeImageRatios(content);
+      final info = await _decodeImageInfo(content);
+      ratios = info.ratios;
+      naturalWidths = info.naturalWidths;
       _log('图片解码 ${ratios.length} 张 ${swDecode.elapsedMilliseconds}ms');
     }
 
@@ -246,6 +271,7 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
       viewportHeight: textVpH,
       typo: typo,
       imageAspectRatios: ratios,
+      imageNaturalWidths: naturalWidths,
       chapterStarts: starts.toSet(),
     );
     final pages = <BookPage>[];
@@ -295,6 +321,7 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
         key: key,
         pages: pages,
         ratios: ratios,
+        naturalWidths: naturalWidths,
         flatBlocks: flat,
       );
       _log('写分页缓存(整本) key=$key pages=${pages.length}');
@@ -305,6 +332,7 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
         key: key,
         pages: pages,
         ratios: ratios,
+        naturalWidths: naturalWidths,
         flatBlocks: flat,
         partial: true,
         resumeBlockIndex: snap.blockIndex,
@@ -321,6 +349,7 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
         content: content,
         pages: pages,
         ratios: ratios,
+        naturalWidths: naturalWidths,
         key: key,
         fingerprint: fp,
         paginator: partial ? paginator : null,
@@ -328,11 +357,22 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
     );
   }
 
-  Future<Map<String, double>> _decodeImageRatios(BookContent content) async {
-    if (content.images.isEmpty) return {};
-    // 在 isolate 内解码（BookParser.decodeImageRatios 用 dart:ui 底层 API），
-    // 避免主线程逐张解码卡 UI。
-    return compute(BookParser.decodeImageRatios, content.images);
+  Future<({Map<String, double> ratios, Map<String, int> naturalWidths})>
+  _decodeImageInfo(BookContent content) async {
+    if (content.images.isEmpty) {
+      return (
+        ratios: const <String, double>{},
+        naturalWidths: const <String, int>{},
+      );
+    }
+    // 纯 Dart 读图片头部（不依赖 dart:ui，可在 isolate 安全执行），
+    // 避免主线程逐张解码卡 UI；record 含 Map 时 compute 的 R 推断退化为
+    // Map<dynamic,dynamic>，这里重建为具体类型。
+    final r = await compute(BookParser.decodeImageInfo, content.images);
+    return (
+      ratios: Map<String, double>.from(r.ratios),
+      naturalWidths: Map<String, int>.from(r.naturalWidths),
+    );
   }
 
   void _enterReader(BookPrefetchedData? data) {

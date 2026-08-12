@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 import 'package:archive/archive.dart';
 import 'package:html/dom.dart' as html;
@@ -196,27 +195,49 @@ class BookParser {
     );
   }
 
-  /// 解析 EPUB 并在同 isolate 内顺带解码图片宽高比。
+  /// 解析 EPUB 并在同 isolate 内顺带解码图片宽高比与自然宽度。
   ///
-  /// [parseEpub] 返回的 images 与 [decodeImageRatios] 在同一 isolate 串行执行，
+  /// [parseEpub] 返回的 images 与 [decodeImageInfo] 在同一 isolate 串行执行，
   /// 避免 images 再单独传进另一个 isolate（compute 默认对 Uint8List 深拷贝，
-  /// 图片多的 EPUB 大书来回拷贝会冻结 UI）。返回 content + ratios 供调用方直接使用。
-  static Future<({BookContent content, Map<String, double> ratios})>
+  /// 图片多的 EPUB 大书来回拷贝会冻结 UI）。返回 content + ratios + naturalWidths
+  /// 供调用方直接使用。
+  static Future<
+    ({
+      BookContent content,
+      Map<String, double> ratios,
+      Map<String, int> naturalWidths,
+    })
+  >
   parseEpubWithRatios(File file) async {
     final content = await parseEpub(file);
-    final ratios = await decodeImageRatios(content.images);
-    return (content: content, ratios: ratios);
+    final info = decodeImageInfo(content.images);
+    return (
+      content: content,
+      ratios: info.ratios,
+      naturalWidths: info.naturalWidths,
+    );
   }
 
   /// 解析 MOBI/AZW/AZW3：先用 [KindleBook] 转 EPUB 字节，再走 [parseEpubBytes]，
-  /// 同一 isolate 内顺带解码图片宽高比（与 EPUB 路径一致，省 images 跨 isolate 深拷贝）。
-  static Future<({BookContent content, Map<String, double> ratios})>
+  /// 同一 isolate 内顺带解码图片宽高比与自然宽度（与 EPUB 路径一致，省 images 跨
+  /// isolate 深拷贝）。
+  static Future<
+    ({
+      BookContent content,
+      Map<String, double> ratios,
+      Map<String, int> naturalWidths,
+    })
+  >
   parseMobiWithRatios(File file) async {
     final bytes = await file.readAsBytes();
     final epubBytes = KindleBook.fromBytes(bytes).toEpub();
     final content = parseEpubBytes(epubBytes);
-    final ratios = await decodeImageRatios(content.images);
-    return (content: content, ratios: ratios);
+    final info = decodeImageInfo(content.images);
+    return (
+      content: content,
+      ratios: info.ratios,
+      naturalWidths: info.naturalWidths,
+    );
   }
 
   /// 从 EPUB 提取封面图字节（不解析正文）：
@@ -331,26 +352,68 @@ class BookParser {
     );
   }
 
-  /// 在 isolate 内解码图片宽高比（宽/高）。用 dart:ui 底层
-  /// [ui.instantiateImageCodec]（不依赖 PaintingBinding，可在 compute isolate 运行），
-  /// 避免主线程逐张解码卡 UI。解码失败的张不写入，调用方按默认比例处理。
-  static Future<Map<String, double>> decodeImageRatios(
-    Map<String, Uint8List> images,
-  ) async {
+  /// 解析图片宽高比（宽/高）与自然像素宽度。纯 Dart 读图片头部（PNG/GIF/JPEG），
+  /// 不依赖 dart:ui--instantiateImageCodec 在 compute 子 isolate 不可用会抛异常
+  /// 致结果为空。故可安全在 isolate 内同步执行；SVG 等无固定像素尺寸的跳过。
+  /// naturalWidths 供渲染层区分行内小图标（如"注"标记）与整页插图。
+  static ({Map<String, double> ratios, Map<String, int> naturalWidths})
+  decodeImageInfo(Map<String, Uint8List> images) {
     final ratios = <String, double>{};
+    final naturalWidths = <String, int>{};
     for (final entry in images.entries) {
-      try {
-        final codec = await ui.instantiateImageCodec(entry.value);
-        final frame = await codec.getNextFrame();
-        final img = frame.image;
-        ratios[entry.key] = img.height == 0 ? 1.5 : img.width / img.height;
-        img.dispose();
-        codec.dispose();
-      } catch (_) {
-        // 解码失败跳过，调用方按默认比例
+      final size = _imageNaturalSize(entry.value);
+      if (size == null) continue; // 未知格式，调用方按默认比例
+      final w = size.$1, h = size.$2;
+      naturalWidths[entry.key] = w;
+      ratios[entry.key] = h == 0 ? 1.5 : w / h;
+    }
+    return (ratios: ratios, naturalWidths: naturalWidths);
+  }
+
+  /// 纯 Dart 读取图片自然像素宽高（仅读头部，不解码整图）。支持 PNG / GIF / JPEG；
+  /// 其他格式（SVG/WEBP 等）返回 null。
+  static (int, int)? _imageNaturalSize(Uint8List b) {
+    if (b.length < 24) return null;
+    // PNG：IHDR 起始处 width/height 各 4 字节大端
+    if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) {
+      final w = (b[16] << 24) | (b[17] << 16) | (b[18] << 8) | b[19];
+      final h = (b[20] << 24) | (b[21] << 16) | (b[22] << 8) | b[23];
+      return (w, h);
+    }
+    // GIF：width/height 各 2 字节小端
+    if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) {
+      if (b.length < 10) return null;
+      final w = b[6] | (b[7] << 8);
+      final h = b[8] | (b[9] << 8);
+      return (w, h);
+    }
+    // JPEG：扫描 SOF marker 取宽高
+    if (b[0] == 0xFF && b[1] == 0xD8) {
+      var i = 2;
+      while (i + 9 < b.length) {
+        if (b[i] != 0xFF) {
+          i++;
+          continue;
+        }
+        final marker = b[i + 1];
+        i += 2;
+        // SOF0~SOF15（DHT/JPG/DAC 不是 SOF）
+        if (marker >= 0xC0 &&
+            marker <= 0xCF &&
+            marker != 0xC4 &&
+            marker != 0xC8 &&
+            marker != 0xCC) {
+          final h = (b[i + 3] << 8) | b[i + 4];
+          final w = (b[i + 5] << 8) | b[i + 6];
+          return (w, h);
+        }
+        if (marker == 0xD8 || marker == 0xD9) continue; // SOI/EOI 无段长度
+        if (i + 1 >= b.length) break;
+        final len = (b[i] << 8) | b[i + 1];
+        i += len;
       }
     }
-    return ratios;
+    return null;
   }
 
   /// 递归提取 body 下的 block：容器元素（div/section 等）下钻，

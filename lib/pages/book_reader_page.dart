@@ -15,16 +15,25 @@ import '../models/book.dart';
 import '../models/book_content.dart';
 import '../models/bookshelf.dart';
 import '../services/book_download_service.dart';
+import '../services/book_font_service.dart';
 import '../services/book_paginator.dart';
 import '../services/book_page_cache_service.dart';
 import '../services/book_parser.dart';
 import '../services/book_reading_progress_service.dart';
+import '../services/reader_override_service.dart';
 import '../services/bookshelf_service.dart';
 import '../services/platform_service.dart';
 import '../services/settings_service.dart';
 import '../theme/jelly_theme.dart';
+import '../widgets/book_page_cover.dart';
 import '../widgets/book_page_curl.dart';
+import '../widgets/pomodoro_button.dart';
 import 'book_prefetch_page.dart';
+
+/// 图书阅读器固定浅色阅读主题，不跟随全局暗色模式：
+/// 仿真翻页为固定纸张图背景，全局暗色下文字翻白配浅纸看不清。
+/// 改为 true 可启用夜间反色（未来若加阅读器独立夜间模式开关，改此处即可）。
+const bool _readerIsDark = false;
 
 /// 图书阅读页：EPUB / MOBI / TXT / PDF app 内排版阅读；
 /// 其余格式由 [open] 路由到外部应用。
@@ -109,6 +118,7 @@ class BookPrefetchedData {
   final BookContent content;
   final List<BookPage> pages;
   final Map<String, double> ratios;
+  final Map<String, int> naturalWidths;
   final String key;
   final String fingerprint;
 
@@ -120,6 +130,7 @@ class BookPrefetchedData {
     required this.content,
     required this.pages,
     required this.ratios,
+    required this.naturalWidths,
     required this.key,
     required this.fingerprint,
     this.paginator,
@@ -143,7 +154,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
   late BookTypography _typo;
 
   // 翻页模式
-  late final PageController _pageController;
+  late PageController _pageController;
   List<BookPage> _pages = const [];
   int _currentPage = 0;
   // 常驻 HUD（页码/进度）监听此 notifier，翻页时局部刷新，不重建 PageView
@@ -152,6 +163,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
   int _paginateDone = 0;
   int _paginateTotal = 0;
   final Map<String, double> _imageRatios = {};
+  // imageKey -> 图片自然像素宽度（行内小图标判定用，与 _imageRatios 同源填充）
+  final Map<String, int> _imageNaturalWidths = {};
   String _paginateKey = '';
   String _contentFingerprint = '';
 
@@ -187,6 +200,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
       _content = pf.content;
       _pages = pf.pages;
       _imageRatios.addAll(pf.ratios);
+      _imageNaturalWidths.addAll(pf.naturalWidths);
       _paginateKey = pf.key;
       _contentFingerprint = pf.fingerprint;
       _log(
@@ -205,9 +219,17 @@ class _BookReaderPageState extends State<BookReaderPage> {
         _pendingResumeBlock = startBlock;
       }
       _currentPage = target;
+      // 双页模式（翻页/仿真）下把 _currentPage 对齐到 spread 左页：
+      // 仿真模式直接按 _currentSpread 渲染，需对齐使 indicator/HUD 显示正确；
+      // 翻页模式 PageController initialPage 改为目标 spread，进入即续读而非总停在第0页。
+      if (_isDoublePageNow && !_isImageMode) {
+        _currentPage = _spreadLeftPage(_pageToSpread(target));
+      }
       // 图片模式下 notifier 已由 _setupImageMode 置为当前图序号，勿覆盖
-      if (!_isImageMode) _currentPageNotifier.value = target;
-      _pageController = PageController(initialPage: target);
+      if (!_isImageMode) _currentPageNotifier.value = _currentPage;
+      _pageController = PageController(
+        initialPage: _isDoublePageNow ? _pageToSpread(target) : _currentPage,
+      );
       // 过渡页可能只分了一部分就进来：后台继续补齐剩余页
       final pg = pf.paginator;
       if (pg != null && !pg.finished) {
@@ -223,6 +245,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
       _load();
     }
     SettingsService().addListener(_onSettingsChanged);
+    ReaderOverrideService().addListener(_onSettingsChanged);
     // 沉浸阅读：延后到路由转场动画结束再隐藏顶部状态栏（保留底部导航栏），
     // 避免系统栏切换与 MaterialPageRoute 转场叠加造成进入卡顿。
     Future.delayed(const Duration(milliseconds: 350), () {
@@ -232,10 +255,16 @@ class _BookReaderPageState extends State<BookReaderPage> {
         overlays: [SystemUiOverlay.bottom],
       );
     });
+    PlatformService.onVolumeKey = _onVolumeKey;
+    PlatformService.setVolumeKeyNav(
+      ReaderOverrideService().effectiveVolumeKeyTurnBook(widget.task.bookId),
+    );
   }
 
   @override
   void dispose() {
+    PlatformService.onVolumeKey = null;
+    PlatformService.setVolumeKeyNav(false);
     // 后台续分页未完：捕获 partial 状态 fire-and-forget 写缓存，下次断点续分页，
     // 不再从头重排。pages 的 block 皆来自 content.flatBlocks（主线程分页 / read
     // 主线程重建），identity 与 flatBlocks 一致，write idx 命中。
@@ -246,6 +275,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
         _paginateKey.isNotEmpty) {
       final pages = List<BookPage>.of(_pages);
       final ratios = Map<String, double>.of(_imageRatios);
+      final naturalWidths = Map<String, int>.of(_imageNaturalWidths);
       final flat = _content!.flatBlocks;
       final key = _paginateKey;
       final bookId = widget.task.bookId;
@@ -259,6 +289,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
         key: key,
         pages: pages,
         ratios: ratios,
+        naturalWidths: naturalWidths,
         flatBlocks: flat,
         partial: true,
         resumeBlockIndex: snap.blockIndex,
@@ -269,27 +300,32 @@ class _BookReaderPageState extends State<BookReaderPage> {
     }
     _ongoingPaginator = null; // 取消后台流式分页（循环见 null 即退出）
     SettingsService().removeListener(_onSettingsChanged);
+    ReaderOverrideService().removeListener(_onSettingsChanged);
     _pageController.dispose();
     _imagePageController?.dispose();
     _currentPageNotifier.dispose();
     // 离开阅读器：恢复状态栏（App 默认 edge-to-edge）
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    // 进度在阅读中已持久化但未 notify；退出时延后到帧末通知书架刷新进度徽标，
-    // 避免在 widget tree 锁定期间（路由出栈）markNeedsBuild 崩溃。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      BookReadingProgressService().notifyProgressChanged();
-    });
+    // 进度在翻页时已按节流策略通知书架重排（后台静默），退出时不额外 notify，
+    // 避免书架变可见时重建造成的"列表刷新"观感。
     super.dispose();
   }
 
   BookTypography _typoFromSettings([TextScaler? scaler, TextStyle? inherited]) {
-    final s = SettingsService();
+    final bookId = widget.task.bookId;
+    final o = ReaderOverrideService();
+    final mode = o.effectiveBookMode(bookId);
     return BookTypography(
-      fontSize: s.bookFontSize,
-      lineHeight: s.bookLineHeight,
-      padding: s.bookHorizontalPadding,
-      verticalPadding: s.bookVerticalPadding,
-      fontFamily: s.bookFontFamilyName,
+      fontSize: o.effectiveBookFontSize(bookId),
+      lineHeight: o.effectiveBookLineHeight(bookId),
+      padding: o.effectiveBookHorizontalPadding(bookId),
+      verticalPadding: o.effectiveBookVerticalPadding(bookId),
+      // 字体族：用户字体偏好优先（含 'system' 哨兵），其次由模式派生。
+      // 仿真 → inkReadingKai，普通翻页 → null（系统默认）。
+      fontFamily: ReaderOverrideService.resolveFontFamily(
+        o.effectiveBookFontFamily(bookId),
+        mode,
+      ),
       // 祖先 DefaultTextStyle.style：渲染端 SelectableText/Text 会 merge 它，
       // 度量须同步 merge，否则 letterSpacing/fontWeight 等残留字段致 meas<col。
       inheritedStyle: inherited ?? const TextStyle(),
@@ -319,6 +355,9 @@ class _BookReaderPageState extends State<BookReaderPage> {
 
   void _onSettingsChanged() {
     if (!mounted) return;
+    PlatformService.setVolumeKeyNav(
+      ReaderOverrideService().effectiveVolumeKeyTurnBook(widget.task.bookId),
+    );
     final newTypo = _typoFromSettings(_typo.textScaler, _typo.inheritedStyle);
     if (newTypo.fontSize != _typo.fontSize ||
         newTypo.lineHeight != _typo.lineHeight ||
@@ -336,9 +375,12 @@ class _BookReaderPageState extends State<BookReaderPage> {
         if (c != null && c.hasClients) c.jumpToPage(_currentImageIndex);
         return;
       }
-      if (SettingsService().bookReadingMode == BookReadingMode.pageTurn &&
+      if (ReaderOverrideService().effectiveBookMode(widget.task.bookId) ==
+              BookReadingMode.pageTurn &&
           _pageController.hasClients) {
-        _pageController.jumpToPage(_currentPage);
+        _pageController.jumpToPage(
+          _isDoublePage ? _currentSpread : _currentPage,
+        );
       }
     });
   }
@@ -365,10 +407,12 @@ class _BookReaderPageState extends State<BookReaderPage> {
         final r = await compute(BookParser.parseMobiWithRatios, File(path));
         content = r.content;
         _imageRatios.addAll(r.ratios);
+        _imageNaturalWidths.addAll(r.naturalWidths);
       } else {
         final r = await compute(BookParser.parseEpubWithRatios, File(path));
         content = r.content;
         _imageRatios.addAll(r.ratios);
+        _imageNaturalWidths.addAll(r.naturalWidths);
       }
       if (!mounted) return;
       setState(() {
@@ -392,15 +436,69 @@ class _BookReaderPageState extends State<BookReaderPage> {
     // 翻页模式：续读位置在 _paginate 末尾按 preserveBlockIndex 跳转
   }
 
-  /// 分页缓存键：视口尺寸 + 排版参数 + bookId + 内容指纹。_buildPaged 与 _paginate
-  /// 及过渡页 / 缓存服务共用同一格式（[BookPageCacheService.keyOf]），确保判等一致，
-  /// 避免字号变化或内容更新后用过期分页渲染导致底部溢出。
+  /// 双页模式：仅翻页/仿真模式 + 开关开启 + 横屏 + 非图片模式 时生效（用 build context）
+  bool get _isDoublePage {
+    if (_isImageMode) return false;
+    final mode = ReaderOverrideService().effectiveBookMode(widget.task.bookId);
+    if (mode != BookReadingMode.pageTurn &&
+        mode != BookReadingMode.simulation &&
+        mode != BookReadingMode.cover) {
+      return false;
+    }
+    if (!ReaderOverrideService().effectiveDoublePageBook(widget.task.bookId)) {
+      return false;
+    }
+    return MediaQuery.orientationOf(context) == Orientation.landscape;
+  }
+
+  /// 双页状态（非 build 上下文用，如 initState）：用 platformDispatcher 算横屏
+  bool get _isDoublePageNow {
+    if (_isImageMode) return false;
+    final mode = ReaderOverrideService().effectiveBookMode(widget.task.bookId);
+    if (mode != BookReadingMode.pageTurn &&
+        mode != BookReadingMode.simulation &&
+        mode != BookReadingMode.cover) {
+      return false;
+    }
+    if (!ReaderOverrideService().effectiveDoublePageBook(widget.task.bookId)) {
+      return false;
+    }
+    final views = WidgetsBinding.instance.platformDispatcher.views;
+    if (views.isEmpty) return false;
+    final s = views.first.physicalSize;
+    return s.width > s.height;
+  }
+
+  /// 双页 spread 映射（首页单独成页）：spread0=页0，spreadN(N>0)=页(2N-1)+页(2N)
+  int _pageToSpread(int pageIndex) => pageIndex <= 0 ? 0 : (pageIndex + 1) ~/ 2;
+  int _spreadLeftPage(int spread) => spread == 0 ? 0 : spread * 2 - 1;
+  int _spreadRightPage(int spread) => spread * 2;
+  int get _spreadCount => _pages.isEmpty ? 0 : 1 + _pages.length ~/ 2;
+  int get _currentSpread => _pageToSpread(_currentPage);
+
+  /// 分页器 viewportWidth：双页时传等效宽度使 _contentWidth = 半屏文字宽
+  double _paginateViewportWidth(double vpW) {
+    if (!_isDoublePage) return vpW;
+    return (vpW - 2 + _typo.padding * 2) / 2; // gap=2
+  }
+
+  /// 渲染 contentWidth：双页时每页半屏文字宽（与分页度量一致）
+  double _renderContentWidth(double vpW) {
+    final w = vpW - _typo.padding * 2;
+    if (!_isDoublePage) return w;
+    return (w - 2) / 2; // gap=2
+  }
+
+  /// 分页缓存键：视口尺寸 + 排版参数 + bookId + 内容指纹 + 双页状态。_buildPaged
+  /// 与 _paginate 及过渡页 / 缓存服务共用同一格式（[BookPageCacheService.keyOf]），
+  /// 确保判等一致，避免字号变化或内容更新后用过期分页渲染导致底部溢出。
   String _paginateKeyOf(double vpW, double vpH) => BookPageCacheService.keyOf(
     vpW: vpW,
     vpH: vpH,
     typo: _typo,
     bookId: widget.task.bookId,
     fingerprint: _contentFingerprint,
+    doublePage: _isDoublePage,
   );
 
   /// pageTurn 模式：按当前视口与排版参数分页（章间让出 UI 线程，显示进度）。
@@ -429,7 +527,11 @@ class _BookReaderPageState extends State<BookReaderPage> {
         if (newTarget != _currentPage) {
           _currentPage = newTarget;
           _currentPageNotifier.value = newTarget;
-          if (_pageController.hasClients) _pageController.jumpToPage(newTarget);
+          if (_pageController.hasClients) {
+            _pageController.jumpToPage(
+              _isDoublePage ? _pageToSpread(newTarget) : newTarget,
+            );
+          }
         }
       }
       setState(() {});
@@ -445,6 +547,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
       key: _paginateKey,
       pages: _pages,
       ratios: _imageRatios,
+      naturalWidths: _imageNaturalWidths,
       flatBlocks: paginator.blocks,
     );
     _log('写分页缓存(后台完成) key=$_paginateKey pages=${_pages.length}');
@@ -470,10 +573,11 @@ class _BookReaderPageState extends State<BookReaderPage> {
     final totalChapters = starts.length;
     final paginator = BookPaginator(
       blocks: allBlocks,
-      viewportWidth: vpW,
+      viewportWidth: _paginateViewportWidth(vpW),
       viewportHeight: vpH,
       typo: typo,
       imageAspectRatios: _imageRatios,
+      imageNaturalWidths: _imageNaturalWidths,
       chapterStarts: starts.toSet(),
     );
     setState(() {
@@ -509,7 +613,9 @@ class _BookReaderPageState extends State<BookReaderPage> {
     _currentPageNotifier.value = target;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _pageController.hasClients) {
-        _pageController.jumpToPage(target);
+        _pageController.jumpToPage(
+          _isDoublePage ? _pageToSpread(target) : target,
+        );
       }
     });
     _log('重排首批 ${pages.length} 页 -> 定位 block $preserve 页 $target，后台补齐剩余');
@@ -536,10 +642,15 @@ class _BookReaderPageState extends State<BookReaderPage> {
     if (dist > 18 || dt > 350) return;
     final w = MediaQuery.sizeOf(context).width;
     final dx = e.position.dx;
-    if (dx < w / 3) {
-      _onTapLeft();
-    } else if (dx > w * 2 / 3) {
-      _onTapRight();
+    final reverse = ReaderOverrideService().effectiveReverseTapBook(
+      widget.task.bookId,
+    );
+    final tapLeft = dx < w / 3;
+    final tapRight = dx > w * 2 / 3;
+    if (tapLeft) {
+      reverse ? _onTapRight() : _onTapLeft();
+    } else if (tapRight) {
+      reverse ? _onTapLeft() : _onTapRight();
     } else {
       _toggleControls();
     }
@@ -548,7 +659,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
   void _toggleControls() => setState(() => _showControls = !_showControls);
 
   void _onTapLeft() {
-    if (_currentPage > 0) {
+    final canPrev = _isDoublePage ? _currentSpread > 0 : _currentPage > 0;
+    if (canPrev) {
       _pageController.previousPage(
         duration: const Duration(milliseconds: 250),
         curve: Curves.easeOutCubic,
@@ -557,12 +669,36 @@ class _BookReaderPageState extends State<BookReaderPage> {
   }
 
   void _onTapRight() {
-    if (_currentPage < _pages.length - 1) {
+    final canNext = _isDoublePage
+        ? _currentSpread < _spreadCount - 1
+        : _currentPage < _pages.length - 1;
+    if (canNext) {
       _pageController.nextPage(
         duration: const Duration(milliseconds: 250),
         curve: Curves.easeOutCubic,
       );
     }
+  }
+
+  /// 音量键翻页：下=下一页，上=上一页。按当前模式分发到对应翻页方法。
+  void _onVolumeKey(String dir) {
+    if (!mounted) return;
+    final next = dir == 'down';
+    if (_isImageMode) {
+      next ? _imageNext() : _imagePrev();
+      return;
+    }
+    final mode = ReaderOverrideService().effectiveBookMode(widget.task.bookId);
+    if (mode == BookReadingMode.simulation || mode == BookReadingMode.cover) {
+      final spread = _currentSpread;
+      _turnTo(
+        _isDoublePage
+            ? _spreadLeftPage(spread + (next ? 1 : -1))
+            : _currentPage + (next ? 1 : -1),
+      );
+      return;
+    }
+    next ? _onTapRight() : _onTapLeft();
   }
 
   void _goChapter(int chapterIndex) {
@@ -575,19 +711,21 @@ class _BookReaderPageState extends State<BookReaderPage> {
       return;
     }
     final page = BookPaginator.pageIndexOf(_pages, blockIndex);
+    final spread = _pageToSpread(page);
     // 仿真模式无 PageView，_pageController 未挂载，直接切 _currentPage；
     // pageTurn 模式经 PageView 滚动（onPageChanged 会同步 _currentPage 与进度）。
-    if (SettingsService().bookReadingMode == BookReadingMode.simulation) {
+    final mode = ReaderOverrideService().effectiveBookMode(widget.task.bookId);
+    if (mode == BookReadingMode.simulation || mode == BookReadingMode.cover) {
       _turnTo(page);
     } else if (_pageController.hasClients) {
-      _pageController.jumpToPage(page);
+      _pageController.jumpToPage(_isDoublePage ? spread : page);
     }
     setState(() => _showControls = false);
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isDark = _readerIsDark;
     final bgColor = isDark
         ? JellyTheme.backgroundDark
         : JellyTheme.backgroundLight;
@@ -664,24 +802,31 @@ class _BookReaderPageState extends State<BookReaderPage> {
   // ---------------- pageTurn 模式 ----------------
 
   Widget _buildPaged(Color textColor, Color bgColor) {
+    // 仿真模式让背景图铺满全屏（含刘海/状态栏区）：SafeArea 仅吃 top/bottom，
+    // 不吃 left/right，左右安全区改由 _buildPageView 的 padding 加 safeLeft/
+    // safeRight 避开刘海；分页/渲染用扣安全区后的等效宽度，度量与原一致。
+    final simMode =
+        ReaderOverrideService().effectiveBookMode(widget.task.bookId) ==
+        BookReadingMode.simulation;
     return SafeArea(
       top: false,
       bottom: false,
+      left: !simMode,
+      right: !simMode,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final vpW = constraints.maxWidth;
           final vpH = constraints.maxHeight;
-          // 仿真背景图需铺满全屏（含原状态栏区），故上下不交由 SafeArea，
-          // 改为手动按安全区给文字留白；分页用扣掉安全区后的高度，与原一致。
           final safeTop = MediaQuery.paddingOf(context).top;
           final safeBottom = MediaQuery.paddingOf(context).bottom;
+          // 仿真模式 SafeArea 不再吃左右安全区，需手动扣除以保持文字宽度一致
+          final safeLeft = simMode ? MediaQuery.paddingOf(context).left : 0.0;
+          final safeRight = simMode ? MediaQuery.paddingOf(context).right : 0.0;
+          final effW = vpW - safeLeft - safeRight;
           final textVpH = vpH - safeTop - safeBottom;
           // 视口或排版参数变化 -> 重新分页（保留当前 block）
-          final key = _paginateKeyOf(vpW, textVpH);
+          final key = _paginateKeyOf(effW, textVpH);
           final needRepaginate = key != _paginateKey;
-          _log(
-            'reader视口 vpW=$vpW textVpH=$textVpH key=$key oldKey=$_paginateKey needRepaginate=$needRepaginate pages=${_pages.length} ongoing=${_ongoingPaginator != null}',
-          );
           if (needRepaginate && !_paginating) {
             // 视口 / 参数变化：后台重排，首批到当前页即显示，剩余增量补齐
             WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -693,7 +838,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
                   : _pages[_currentPage.clamp(0, _pages.length - 1)]
                         .firstBlockIndex;
               _repaginateBackground(
-                vpW: vpW,
+                vpW: effW,
                 vpH: textVpH,
                 preserveBlockIndex: preserve,
               );
@@ -703,7 +848,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
           if (_paginating || _pages.isEmpty || needRepaginate) {
             return _buildPaginatingView(textColor);
           }
-          final contentWidth = vpW - _typo.padding * 2;
+          final contentWidth = _renderContentWidth(effW);
           // 正文就绪后淡入，消除 loading -> 排版 -> 正文 的硬切（参照漫画阅读器）
           // key 绑定分页参数：重排（视口/字号变化）时 key 变化重新淡入，
           // 稳定时保持 1.0 不重跑
@@ -722,6 +867,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
                   contentWidth,
                   safeTop,
                   safeBottom,
+                  safeLeft,
+                  safeRight,
                 ),
               ),
               // 后台流式分页进行中：底部细进度条，不打扰阅读
@@ -753,9 +900,29 @@ class _BookReaderPageState extends State<BookReaderPage> {
     double contentWidth,
     double safeTop,
     double safeBottom,
+    double safeLeft,
+    double safeRight,
   ) {
-    if (SettingsService().bookReadingMode == BookReadingMode.simulation) {
-      return _buildSimulation(textColor, contentWidth, safeTop, safeBottom);
+    final mode = ReaderOverrideService().effectiveBookMode(widget.task.bookId);
+    if (mode == BookReadingMode.simulation) {
+      return _buildSimulation(
+        textColor,
+        contentWidth,
+        safeTop,
+        safeBottom,
+        safeLeft,
+        safeRight,
+      );
+    }
+    if (mode == BookReadingMode.cover) {
+      return _buildCover(
+        textColor,
+        contentWidth,
+        safeTop,
+        safeBottom,
+        safeLeft,
+        safeRight,
+      );
     }
     return Listener(
       behavior: HitTestBehavior.translucent,
@@ -764,22 +931,93 @@ class _BookReaderPageState extends State<BookReaderPage> {
       child: PageView.builder(
         controller: _pageController,
         physics: const ClampingScrollPhysics(),
-        itemCount: _pages.length,
+        itemCount: _isDoublePage ? _spreadCount : _pages.length,
         onPageChanged: (i) {
-          _currentPage = i;
-          _currentPageNotifier.value = i;
+          final page = _isDoublePage ? _spreadLeftPage(i) : i;
+          _currentPage = page;
+          _currentPageNotifier.value = page;
           _userPaged = true; // 用户手动翻页，取消后台续读自动跳转
           BookReadingProgressService().recordBlock(
             widget.task.bookId,
-            _pages[i].firstBlockIndex,
-            i,
+            _pages[page].firstBlockIndex,
+            page,
             _pages.length,
           );
           _applyReadingStatus();
         },
-        itemBuilder: (context, index) =>
-            _buildPageView(index, textColor, contentWidth, safeTop, safeBottom),
+        itemBuilder: (context, index) => _isDoublePage
+            ? _buildDoublePageSpread(
+                index,
+                textColor,
+                contentWidth,
+                safeTop,
+                safeBottom,
+                safeLeft,
+                safeRight,
+              )
+            : _buildPageView(
+                index,
+                textColor,
+                contentWidth,
+                safeTop,
+                safeBottom,
+                safeLeft,
+                safeRight,
+              ),
       ),
+    );
+  }
+
+  /// 双页 spread：首页或末尾单页时单页占满，否则左右两页并排
+  Widget _buildDoublePageSpread(
+    int spread,
+    Color textColor,
+    double contentWidth,
+    double safeTop,
+    double safeBottom,
+    double safeLeft,
+    double safeRight,
+  ) {
+    final left = _spreadLeftPage(spread);
+    final right = _spreadRightPage(spread);
+    final hasRight = right < _pages.length;
+    if (spread == 0 || !hasRight) {
+      return _buildPageView(
+        spread == 0 ? 0 : left,
+        textColor,
+        contentWidth,
+        safeTop,
+        safeBottom,
+        spread == 0 ? safeLeft : 0,
+        spread == 0 ? safeRight : 0,
+      );
+    }
+    return Row(
+      children: [
+        Expanded(
+          child: _buildPageView(
+            left,
+            textColor,
+            contentWidth,
+            safeTop,
+            safeBottom,
+            safeLeft,
+            0,
+          ),
+        ),
+        const SizedBox(width: 2),
+        Expanded(
+          child: _buildPageView(
+            right,
+            textColor,
+            contentWidth,
+            safeTop,
+            safeBottom,
+            0,
+            safeRight,
+          ),
+        ),
+      ],
     );
   }
 
@@ -788,7 +1026,68 @@ class _BookReaderPageState extends State<BookReaderPage> {
     double contentWidth,
     double safeTop,
     double safeBottom,
+    double safeLeft,
+    double safeRight,
   ) {
+    // 双页模式：以 spread 为单位卷曲翻页（左右两页一起卷起/落下）
+    if (_isDoublePage) {
+      final spread = _currentSpread;
+      return BookPageCurl(
+        page: Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.asset(
+              'assets/images/reader_backgroud.jpg',
+              fit: BoxFit.cover,
+              width: double.infinity,
+              height: double.infinity,
+            ),
+            _buildDoublePageSpread(
+              spread,
+              textColor,
+              contentWidth,
+              safeTop,
+              safeBottom,
+              safeLeft,
+              safeRight,
+            ),
+          ],
+        ),
+        nextPage: spread < _spreadCount - 1
+            ? _buildDoublePageSpread(
+                spread + 1,
+                textColor,
+                contentWidth,
+                safeTop,
+                safeBottom,
+                safeLeft,
+                safeRight,
+              )
+            : null,
+        prevPage: spread > 0
+            ? _buildDoublePageSpread(
+                spread - 1,
+                textColor,
+                contentWidth,
+                safeTop,
+                safeBottom,
+                safeLeft,
+                safeRight,
+              )
+            : null,
+        background: Image.asset(
+          'assets/images/reader_backgroud.jpg',
+          fit: BoxFit.cover,
+          width: double.infinity,
+          height: double.infinity,
+        ),
+        canNext: spread < _spreadCount - 1,
+        canPrev: spread > 0,
+        onTurnNext: () => _turnTo(_spreadLeftPage(spread + 1)),
+        onTurnPrev: () => _turnTo(_spreadLeftPage(spread - 1)),
+        onTapCenter: _toggleControls,
+      );
+    }
     return BookPageCurl(
       // 翻起页自带背景图底：栅格化出"背景图+文字"的不透明页，卷曲时文字附在
       // 背景图纸面上；nextPage/prevPage 保持透明，翻页时露出底层背景图。
@@ -807,6 +1106,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
             contentWidth,
             safeTop,
             safeBottom,
+            safeLeft,
+            safeRight,
           ),
         ],
       ),
@@ -817,6 +1118,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
               contentWidth,
               safeTop,
               safeBottom,
+              safeLeft,
+              safeRight,
             )
           : null,
       prevPage: _currentPage > 0
@@ -826,6 +1129,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
               contentWidth,
               safeTop,
               safeBottom,
+              safeLeft,
+              safeRight,
             )
           : null,
       background: Image.asset(
@@ -842,19 +1147,118 @@ class _BookReaderPageState extends State<BookReaderPage> {
     );
   }
 
+  /// 覆盖模式：新页从边缘滑入覆盖当前页（无背景图，用 pageTurn 式正常布局）。
+  Widget _buildCover(
+    Color textColor,
+    double contentWidth,
+    double safeTop,
+    double safeBottom,
+    double safeLeft,
+    double safeRight,
+  ) {
+    // 滑入页需自带不透明底色，否则覆盖时与当前页文字重叠
+    final bgColor = _readerIsDark
+        ? JellyTheme.backgroundDark
+        : JellyTheme.backgroundLight;
+    // 双页模式：以 spread 为单位覆盖翻页
+    if (_isDoublePage) {
+      final spread = _currentSpread;
+      return BookPageCover(
+        backgroundColor: bgColor,
+        page: _buildDoublePageSpread(
+          spread,
+          textColor,
+          contentWidth,
+          safeTop,
+          safeBottom,
+          safeLeft,
+          safeRight,
+        ),
+        nextPage: spread < _spreadCount - 1
+            ? _buildDoublePageSpread(
+                spread + 1,
+                textColor,
+                contentWidth,
+                safeTop,
+                safeBottom,
+                safeLeft,
+                safeRight,
+              )
+            : null,
+        prevPage: spread > 0
+            ? _buildDoublePageSpread(
+                spread - 1,
+                textColor,
+                contentWidth,
+                safeTop,
+                safeBottom,
+                safeLeft,
+                safeRight,
+              )
+            : null,
+        canNext: spread < _spreadCount - 1,
+        canPrev: spread > 0,
+        onTurnNext: () => _turnTo(_spreadLeftPage(spread + 1)),
+        onTurnPrev: () => _turnTo(_spreadLeftPage(spread - 1)),
+        onTapCenter: _toggleControls,
+      );
+    }
+    return BookPageCover(
+      backgroundColor: bgColor,
+      page: _buildPageView(
+        _currentPage,
+        textColor,
+        contentWidth,
+        safeTop,
+        safeBottom,
+        safeLeft,
+        safeRight,
+      ),
+      nextPage: _currentPage < _pages.length - 1
+          ? _buildPageView(
+              _currentPage + 1,
+              textColor,
+              contentWidth,
+              safeTop,
+              safeBottom,
+              safeLeft,
+              safeRight,
+            )
+          : null,
+      prevPage: _currentPage > 0
+          ? _buildPageView(
+              _currentPage - 1,
+              textColor,
+              contentWidth,
+              safeTop,
+              safeBottom,
+              safeLeft,
+              safeRight,
+            )
+          : null,
+      canNext: _currentPage < _pages.length - 1,
+      canPrev: _currentPage > 0,
+      onTurnNext: () => _turnTo(_currentPage + 1),
+      onTurnPrev: () => _turnTo(_currentPage - 1),
+      onTapCenter: _toggleControls,
+    );
+  }
+
   Widget _buildPageView(
     int index,
     Color textColor,
     double contentWidth,
     double safeTop,
     double safeBottom,
+    double safeLeft,
+    double safeRight,
   ) {
     final entries = _pages[index].entries;
     return Padding(
       padding: EdgeInsets.fromLTRB(
-        _typo.padding,
+        safeLeft + _typo.padding,
         safeTop + _typo.verticalPadding,
-        _typo.padding,
+        safeRight + _typo.padding,
         safeBottom + _typo.verticalPadding,
       ),
       child: Column(
@@ -872,6 +1276,10 @@ class _BookReaderPageState extends State<BookReaderPage> {
 
   void _turnTo(int index) {
     if (index < 0 || index >= _pages.length) return;
+    // 双页模式：_currentPage 始终对齐到 spread 左页，保证 _currentSpread/翻页计算稳定
+    if (_isDoublePage) {
+      index = _spreadLeftPage(_pageToSpread(index));
+    }
     _userPaged = true; // 仿真翻页也算用户操作，取消后台续读自动跳转
     setState(() => _currentPage = index);
     _currentPageNotifier.value = index;
@@ -913,7 +1321,9 @@ class _BookReaderPageState extends State<BookReaderPage> {
       return;
     }
     if (_pages.isEmpty) return;
-    final finished = _currentPage + 1 >= _pages.length;
+    final finished = _isDoublePage
+        ? _currentSpread + 1 >= _spreadCount
+        : _currentPage + 1 >= _pages.length;
     final target = finished
         ? BookshelfService.presetFinished
         : BookshelfService.presetReading;
@@ -1059,7 +1469,11 @@ class _BookReaderPageState extends State<BookReaderPage> {
         _currentPageNotifier.value = _currentPage;
         _imagePageController?.dispose();
         _imagePageController = null;
-        if (SettingsService().bookReadingMode != BookReadingMode.simulation) {
+        final mode = ReaderOverrideService().effectiveBookMode(
+          widget.task.bookId,
+        );
+        if (mode != BookReadingMode.simulation &&
+            mode != BookReadingMode.cover) {
           // pageTurn 模式 PageView 在图片模式期间未挂载，重建控制器以 initialPage 定位
           _pageController.dispose();
           _pageController = PageController(initialPage: _currentPage);
@@ -1150,7 +1564,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
 
   Widget _buildImageGallery() {
     // 仿真模式 -> 消散（交叉淡入淡出）；其余 -> PhotoView 画廊（左右翻页 + 双指缩放）
-    if (SettingsService().bookReadingMode == BookReadingMode.simulation) {
+    if (ReaderOverrideService().effectiveBookMode(widget.task.bookId) ==
+        BookReadingMode.simulation) {
       return _buildImageDissolve();
     }
     return _buildImagePhotoGallery();
@@ -1238,7 +1653,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
     if (index < 0 || index >= _imageBlockIndices.length) {
       return const SizedBox.shrink();
     }
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isDark = _readerIsDark;
     final loader = _content?.imageLoader;
     if (loader != null) {
       // PDF 懒加载：经 ImageProvider 走 Flutter 图片缓存；夜间反色（同文本模式）
@@ -1332,8 +1747,31 @@ class _BookReaderPageState extends State<BookReaderPage> {
         }
         return const SizedBox.shrink();
       }
-      final isDark = Theme.of(context).brightness == Brightness.dark;
+      final isDark = _readerIsDark;
       final dpr = MediaQuery.devicePixelRatioOf(context);
+      // 行内标注图标（注脚标记等，CSS 常约束 ~0.8em）：按字号显示，不占满宽。
+      // 判据：自然像素宽度小且接近正方形——出版方为 retina 给的位图常 100~256px，
+      // 但 intended 显示仅 1em 量级；无 width 属性时按像素显示会被放大约 10 倍。
+      final naturalW = _imageNaturalWidths[block.imageKey];
+      final ar = _imageRatios[block.imageKey] ?? block.aspectRatio ?? 1.5;
+      final isInlineIcon =
+          naturalW != null && naturalW <= 256 && ar >= 0.7 && ar <= 1.4;
+      if (isInlineIcon) {
+        final iconSize = _typo.fontSize * 0.8;
+        return Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Image.memory(
+            bytes,
+            width: iconSize,
+            height: iconSize,
+            cacheWidth: (iconSize * dpr).round(),
+            fit: BoxFit.contain,
+            gaplessPlayback: true,
+            color: isDark ? Colors.white : null,
+            colorBlendMode: isDark ? BlendMode.difference : null,
+          ),
+        );
+      }
       return Flexible(
         child: Image.memory(
           bytes,
@@ -1358,6 +1796,21 @@ class _BookReaderPageState extends State<BookReaderPage> {
   // ---------------- 常驻 HUD（时间 / 页码 / 进度） ----------------
 
   Widget _buildHud(bool isDark) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        SettingsService(),
+        ReaderOverrideService(),
+      ]),
+      builder: (context, _) {
+        if (!ReaderOverrideService().effectiveShowHudBook(widget.task.bookId)) {
+          return const SizedBox.shrink();
+        }
+        return _buildHudContent(isDark);
+      },
+    );
+  }
+
+  Widget _buildHudContent(bool isDark) {
     final color = (isDark ? Colors.white : Colors.black).withValues(
       alpha: 0.45,
     );
@@ -1506,79 +1959,75 @@ class _BookReaderPageState extends State<BookReaderPage> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        TextButton.icon(
+                        TextButton(
                           onPressed: _chapterStarts.isNotEmpty
                               ? () => _goChapter(_currentChapterIndex() - 1)
                               : null,
-                          icon: Icon(Icons.chevron_left, color: iconColor),
-                          label: Text(
-                            '上一章',
-                            style: TextStyle(color: iconColor),
-                          ),
+                          child: Icon(Icons.chevron_left, color: iconColor),
                         ),
                         Text(
                           _indicatorText(),
                           style: TextStyle(fontSize: 12, color: iconColor),
                         ),
-                        TextButton.icon(
+                        TextButton(
                           onPressed: _chapterStarts.isNotEmpty
                               ? () => _goChapter(_currentChapterIndex() + 1)
                               : null,
-                          icon: Icon(Icons.chevron_right, color: iconColor),
-                          label: Text(
-                            '下一章',
-                            style: TextStyle(color: iconColor),
-                          ),
+                          child: Icon(Icons.chevron_right, color: iconColor),
                         ),
                       ],
                     ),
                     Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Expanded(child: SizedBox()),
-                        // PDF（懒加载）强制进图片模式，故切换按钮对 PDF 始终可用；
-                        // 其余格式沿用 >=10 启发式（仅图片书显示）。
-                        if (_imageBlockIndices.length >= 10 ||
-                            _content?.imageLoader != null)
-                          TextButton.icon(
-                            onPressed: _toggleImageMode,
-                            icon: Icon(
-                              _isImageMode
-                                  ? Icons.article_rounded
-                                  : Icons.image_rounded,
-                              color: iconColor,
+                        // 左组：图片/文本 + 排版
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // PDF（懒加载）强制进图片模式，故切换按钮对 PDF 始终可用；
+                            // 其余格式沿用 >=10 启发式（仅图片书显示）。
+                            if (_imageBlockIndices.length >= 10 ||
+                                _content?.imageLoader != null)
+                              TextButton(
+                                onPressed: _toggleImageMode,
+                                child: Icon(
+                                  _isImageMode
+                                      ? Icons.article_rounded
+                                      : Icons.image_rounded,
+                                  color: iconColor,
+                                ),
+                              ),
+                            if (!_isImageMode)
+                              TextButton(
+                                onPressed: _showTypoSheet,
+                                child: Icon(
+                                  Icons.text_fields_rounded,
+                                  color: iconColor,
+                                ),
+                              ),
+                          ],
+                        ),
+                        // 中间：番茄钟
+                        const PomodoroButton(),
+                        // 右组：设置 + 目录
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            TextButton(
+                              onPressed: _showReaderSettingsSheet,
+                              child: Icon(
+                                Icons.settings_rounded,
+                                color: iconColor,
+                              ),
                             ),
-                            label: Text(
-                              _isImageMode ? '文本' : '图片',
-                              style: TextStyle(color: iconColor),
-                            ),
-                          ),
-                        if (!_isImageMode)
-                          TextButton.icon(
-                            onPressed: _showTypoSheet,
-                            icon: Icon(
-                              Icons.text_fields_rounded,
-                              color: iconColor,
-                            ),
-                            label: Text(
-                              '排版',
-                              style: TextStyle(color: iconColor),
-                            ),
-                          ),
-                        Expanded(
-                          child: Align(
-                            alignment: Alignment.centerRight,
-                            child: TextButton.icon(
+                            TextButton(
                               onPressed: _showToc,
-                              icon: Icon(
+                              child: Icon(
                                 Icons.menu_book_rounded,
                                 color: iconColor,
                               ),
-                              label: Text(
-                                '目录',
-                                style: TextStyle(color: iconColor),
-                              ),
                             ),
-                          ),
+                          ],
                         ),
                       ],
                     ),
@@ -1630,6 +2079,14 @@ class _BookReaderPageState extends State<BookReaderPage> {
       return '${_currentImageIndex + 1}/${_imageBlockIndices.length} 图';
     }
     if (_pages.isEmpty) return '';
+    if (_isDoublePage) {
+      final left = _currentPage + 1;
+      final right = _spreadRightPage(_currentSpread);
+      final hasRight = right < _pages.length;
+      return hasRight
+          ? '$left-${right + 1}/${_pages.length} 页'
+          : '$left/${_pages.length} 页';
+    }
     return '${_currentPage + 1}/${_pages.length} 页';
   }
 
@@ -1647,7 +2104,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
       barrierLabel: '目录',
       transitionDuration: const Duration(milliseconds: 250),
       pageBuilder: (ctx, anim, secondaryAnim) {
-        final isDark = Theme.of(ctx).brightness == Brightness.dark;
+        final isDark = _readerIsDark;
         final textColor = isDark
             ? Colors.white.withValues(alpha: 0.92)
             : JellyTheme.textPrimaryLight;
@@ -1794,113 +2251,531 @@ class _BookReaderPageState extends State<BookReaderPage> {
     );
   }
 
-  // ---------------- 排版设置 ----------------
+  // ---------------- 阅读设置 ----------------
 
-  void _showTypoSheet() {
-    final s = SettingsService();
-    // 草稿：滑块只改草稿，点「确认」才写入 SettingsService 触发重排
-    double draftFontSize = s.bookFontSize;
-    double draftLineHeight = s.bookLineHeight;
-    double draftHPadding = s.bookHorizontalPadding;
-    double draftVPadding = s.bookVerticalPadding;
+  /// 阅读设置弹层：独立设置开关 + 图书阅读模式。
+  /// 草稿式，点「确认」一次性写入（独立设置开启写 per-item 覆盖，否则写全局）。
+  /// 排版（字号/行距/边距）由单独的「排版」按钮负责，不在本弹层内。
+  void _showReaderSettingsSheet() {
+    final o = ReaderOverrideService();
+    final bookId = widget.task.bookId;
+    bool draftIndependent = o.isIndependentBook(bookId);
+    BookReadingMode draftMode = o.effectiveBookMode(bookId);
+    bool draftReverseTap = o.effectiveReverseTapBook(bookId);
+    bool draftDoublePage = o.effectiveDoublePageBook(bookId);
+    bool draftShowHud = o.effectiveShowHudBook(bookId);
+    bool draftVolumeKey = o.effectiveVolumeKeyTurnBook(bookId);
+
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheet) {
           final isDark = Theme.of(ctx).brightness == Brightness.dark;
+          final textColor = isDark ? Colors.white : JellyTheme.textPrimaryLight;
           return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _typoSlider(
-                    label: '字号',
-                    value: draftFontSize,
-                    min: SettingsService.minBookFontSize,
-                    max: SettingsService.maxBookFontSize,
-                    divisions:
-                        ((SettingsService.maxBookFontSize -
-                                    SettingsService.minBookFontSize) *
-                                2)
-                            .round(),
-                    display: draftFontSize.toStringAsFixed(0),
-                    onChanged: (v) {
-                      setSheet(() => draftFontSize = v);
-                    },
-                    isDark: isDark,
-                  ),
-                  _typoSlider(
-                    label: '行距',
-                    value: draftLineHeight,
-                    min: SettingsService.minBookLineHeight,
-                    max: SettingsService.maxBookLineHeight,
-                    divisions:
-                        ((SettingsService.maxBookLineHeight -
-                                    SettingsService.minBookLineHeight) *
-                                10)
-                            .round(),
-                    display: draftLineHeight.toStringAsFixed(1),
-                    onChanged: (v) {
-                      setSheet(() => draftLineHeight = v);
-                    },
-                    isDark: isDark,
-                  ),
-                  _typoSlider(
-                    label: '左右边距',
-                    value: draftHPadding,
-                    min: SettingsService.minBookHorizontalPadding,
-                    max: SettingsService.maxBookHorizontalPadding,
-                    divisions:
-                        (SettingsService.maxBookHorizontalPadding -
-                                SettingsService.minBookHorizontalPadding)
-                            .round(),
-                    display: draftHPadding.toStringAsFixed(0),
-                    onChanged: (v) {
-                      setSheet(() => draftHPadding = v);
-                    },
-                    isDark: isDark,
-                  ),
-                  _typoSlider(
-                    label: '上下边距',
-                    value: draftVPadding,
-                    min: SettingsService.minBookVerticalPadding,
-                    max: SettingsService.maxBookVerticalPadding,
-                    divisions:
-                        (SettingsService.maxBookVerticalPadding -
-                                SettingsService.minBookVerticalPadding)
-                            .round(),
-                    display: draftVPadding.toStringAsFixed(0),
-                    onChanged: (v) {
-                      setSheet(() => draftVPadding = v);
-                    },
-                    isDark: isDark,
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        child: const Text('取消'),
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          '阅读设置',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: textColor,
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          '独立设置',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: draftIndependent
+                                ? JellyTheme.primary
+                                : (isDark
+                                      ? Colors.white70
+                                      : JellyTheme.textSecondary),
+                          ),
+                        ),
+                        Switch(
+                          value: draftIndependent,
+                          activeColor: JellyTheme.primary,
+                          onChanged: (v) =>
+                              setSheet(() => draftIndependent = v),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
                       ),
-                      const Spacer(),
-                      FilledButton(
-                        onPressed: () {
-                          s.setBookFontSize(draftFontSize);
-                          s.setBookLineHeight(draftLineHeight);
-                          s.setBookHorizontalPadding(draftHPadding);
-                          s.setBookVerticalPadding(draftVPadding);
-                          Navigator.pop(ctx);
-                        },
-                        child: const Text('确认'),
+                      decoration: BoxDecoration(
+                        color: JellyTheme.primary.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(8),
                       ),
-                    ],
-                  ),
-                ],
+                      child: Text(
+                        draftIndependent
+                            ? '本书使用独立设置（阅读模式与排版）'
+                            : '当前为全局设置，修改影响所有图书',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: draftIndependent
+                              ? JellyTheme.primary
+                              : (isDark
+                                    ? Colors.white54
+                                    : JellyTheme.textSecondary),
+                        ),
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        Text(
+                          '阅读模式',
+                          style: TextStyle(fontSize: 14, color: textColor),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Row(
+                            children: [
+                              _bookModeChip(
+                                '翻页',
+                                draftMode == BookReadingMode.pageTurn,
+                                isDark,
+                                () => setSheet(
+                                  () => draftMode = BookReadingMode.pageTurn,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              _bookModeChip(
+                                '仿真',
+                                draftMode == BookReadingMode.simulation,
+                                isDark,
+                                () => setSheet(
+                                  () => draftMode = BookReadingMode.simulation,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              _bookModeChip(
+                                '覆盖',
+                                draftMode == BookReadingMode.cover,
+                                isDark,
+                                () => setSheet(
+                                  () => draftMode = BookReadingMode.cover,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Text(
+                          '翻页反转',
+                          style: TextStyle(fontSize: 14, color: textColor),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            '左点下一页、右点上一页',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: isDark
+                                  ? Colors.white54
+                                  : JellyTheme.textSecondary,
+                            ),
+                          ),
+                        ),
+                        Switch(
+                          value: draftReverseTap,
+                          activeColor: JellyTheme.primary,
+                          onChanged: (v) => setSheet(() => draftReverseTap = v),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Text(
+                          '双页模式',
+                          style: TextStyle(fontSize: 14, color: textColor),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            '横屏左右并排（仅翻页模式）',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: isDark
+                                  ? Colors.white54
+                                  : JellyTheme.textSecondary,
+                            ),
+                          ),
+                        ),
+                        Switch(
+                          value: draftDoublePage,
+                          activeColor: JellyTheme.primary,
+                          onChanged: (v) => setSheet(() => draftDoublePage = v),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Text(
+                          '信息栏',
+                          style: TextStyle(fontSize: 14, color: textColor),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            '显示时间、页码、进度',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: isDark
+                                  ? Colors.white54
+                                  : JellyTheme.textSecondary,
+                            ),
+                          ),
+                        ),
+                        Switch(
+                          value: draftShowHud,
+                          activeColor: JellyTheme.primary,
+                          onChanged: (v) => setSheet(() => draftShowHud = v),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Text(
+                          '音量键翻页',
+                          style: TextStyle(fontSize: 14, color: textColor),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            '按音量上/下键翻页（会接管音量键）',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: isDark
+                                  ? Colors.white54
+                                  : JellyTheme.textSecondary,
+                            ),
+                          ),
+                        ),
+                        Switch(
+                          value: draftVolumeKey,
+                          activeColor: JellyTheme.primary,
+                          onChanged: (v) => setSheet(() => draftVolumeKey = v),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('取消'),
+                        ),
+                        const Spacer(),
+                        FilledButton(
+                          onPressed: () async {
+                            await o.setIndependentBook(
+                              bookId,
+                              draftIndependent,
+                            );
+                            o.setBookMode(bookId, draftMode);
+                            o.setBookReverseTap(bookId, draftReverseTap);
+                            o.setBookDoublePage(bookId, draftDoublePage);
+                            o.setBookShowHud(bookId, draftShowHud);
+                            o.setBookVolumeKeyTurn(bookId, draftVolumeKey);
+                            if (ctx.mounted) Navigator.pop(ctx);
+                          },
+                          child: const Text('确认'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _bookModeChip(
+    String label,
+    bool selected,
+    bool isDark,
+    VoidCallback onTap,
+  ) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: selected
+                ? JellyTheme.primary
+                : (isDark
+                      ? Colors.white.withValues(alpha: 0.12)
+                      : Colors.black.withValues(alpha: 0.05)),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              color: selected
+                  ? Colors.white
+                  : (isDark ? Colors.white70 : JellyTheme.textPrimaryLight),
+              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------------- 排版设置 ----------------
+
+  void _showTypoSheet() {
+    final o = ReaderOverrideService();
+    final bookId = widget.task.bookId;
+    // 草稿：滑块只改草稿，点「确认」才写入（独立设置开启写 per-item，否则写全局）
+    double draftFontSize = o.effectiveBookFontSize(bookId);
+    double draftLineHeight = o.effectiveBookLineHeight(bookId);
+    double draftHPadding = o.effectiveBookHorizontalPadding(bookId);
+    double draftVPadding = o.effectiveBookVerticalPadding(bookId);
+    // UI 内部用 auto 哨兵统一表示 null（= 跟随阅读模式），输出时还原成 null
+    final rawFont = o.effectiveBookFontFamily(bookId);
+    String draftFontFamily = (rawFont == null || rawFont.isEmpty)
+        ? BookFontService.autoFamily
+        : rawFont;
+    final fontService = BookFontService();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          final isDark = _readerIsDark;
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _typoSlider(
+                      label: '字号',
+                      value: draftFontSize,
+                      min: SettingsService.minBookFontSize,
+                      max: SettingsService.maxBookFontSize,
+                      divisions:
+                          ((SettingsService.maxBookFontSize -
+                                      SettingsService.minBookFontSize) *
+                                  2)
+                              .round(),
+                      display: draftFontSize.toStringAsFixed(0),
+                      onChanged: (v) {
+                        setSheet(() => draftFontSize = v);
+                      },
+                      isDark: isDark,
+                    ),
+                    _typoSlider(
+                      label: '行距',
+                      value: draftLineHeight,
+                      min: SettingsService.minBookLineHeight,
+                      max: SettingsService.maxBookLineHeight,
+                      divisions:
+                          ((SettingsService.maxBookLineHeight -
+                                      SettingsService.minBookLineHeight) *
+                                  10)
+                              .round(),
+                      display: draftLineHeight.toStringAsFixed(1),
+                      onChanged: (v) {
+                        setSheet(() => draftLineHeight = v);
+                      },
+                      isDark: isDark,
+                    ),
+                    _typoSlider(
+                      label: '左右边距',
+                      value: draftHPadding,
+                      min: SettingsService.minBookHorizontalPadding,
+                      max: SettingsService.maxBookHorizontalPadding,
+                      divisions:
+                          (SettingsService.maxBookHorizontalPadding -
+                                  SettingsService.minBookHorizontalPadding)
+                              .round(),
+                      display: draftHPadding.toStringAsFixed(0),
+                      onChanged: (v) {
+                        setSheet(() => draftHPadding = v);
+                      },
+                      isDark: isDark,
+                    ),
+                    _typoSlider(
+                      label: '上下边距',
+                      value: draftVPadding,
+                      min: SettingsService.minBookVerticalPadding,
+                      max: SettingsService.maxBookVerticalPadding,
+                      divisions:
+                          (SettingsService.maxBookVerticalPadding -
+                                  SettingsService.minBookVerticalPadding)
+                              .round(),
+                      display: draftVPadding.toStringAsFixed(0),
+                      onChanged: (v) {
+                        setSheet(() => draftVPadding = v);
+                      },
+                      isDark: isDark,
+                    ),
+                    _typoFontRow(
+                      draftFamily: draftFontFamily,
+                      fontService: fontService,
+                      onSelect: (v) => setSheet(() => draftFontFamily = v),
+                      onImport: () async {
+                        final family = await fontService.importFont();
+                        if (family != null) {
+                          setSheet(() => draftFontFamily = family);
+                        }
+                      },
+                      isDark: isDark,
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('取消'),
+                        ),
+                        const Spacer(),
+                        FilledButton(
+                          onPressed: () {
+                            o.setBookFontSize(bookId, draftFontSize);
+                            o.setBookLineHeight(bookId, draftLineHeight);
+                            o.setBookHorizontalPadding(bookId, draftHPadding);
+                            o.setBookVerticalPadding(bookId, draftVPadding);
+                            o.setBookFontFamily(
+                              bookId,
+                              draftFontFamily == BookFontService.autoFamily
+                                  ? null
+                                  : draftFontFamily,
+                            );
+                            Navigator.pop(ctx);
+                          },
+                          child: const Text('确认'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// 排版弹层中的字体选择行：内置(跟随模式/系统/水墨楷体) + 用户字体 + 「+」导入。
+  Widget _typoFontRow({
+    required String draftFamily,
+    required BookFontService fontService,
+    required ValueChanged<String> onSelect,
+    required Future<void> Function() onImport,
+    required bool isDark,
+  }) {
+    final entries = <(String label, String family)>[
+      ('跟随模式', BookFontService.autoFamily),
+      ('系统默认', BookFontService.systemFamily),
+      ('水墨楷体', 'inkReadingKai'),
+      for (final f in fontService.userFamilies) (f, f),
+    ];
+    // 同步可能缺失：当前选择既不在内置列表也不在用户字体列表
+    // （如字体文件被外部删除），追加一个标记项让用户能识别并改选。
+    final known = entries.map((e) => e.$2).toSet();
+    if (!known.contains(draftFamily)) {
+      entries.add(('$draftFamily (未注册)', draftFamily));
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 40,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                '字体',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+          Expanded(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final e in entries)
+                  _typoFontChip(
+                    e.$1,
+                    e.$2 == draftFamily,
+                    isDark,
+                    () => onSelect(e.$2),
+                  ),
+                _typoFontChip('＋', false, isDark, onImport, isAction: true),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _typoFontChip(
+    String label,
+    bool selected,
+    bool isDark,
+    VoidCallback onTap, {
+    bool isAction = false,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected
+              ? JellyTheme.primary
+              : (isDark
+                    ? Colors.white.withValues(alpha: 0.12)
+                    : Colors.black.withValues(alpha: 0.05)),
+          borderRadius: BorderRadius.circular(8),
+          border: isAction && !selected
+              ? Border.all(
+                  color: isDark ? Colors.white24 : Colors.black12,
+                  width: 1,
+                )
+              : null,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            color: selected
+                ? Colors.white
+                : (isDark ? Colors.white70 : JellyTheme.textPrimaryLight),
+            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
       ),
     );
   }
@@ -2005,7 +2880,7 @@ class _PdfPageImageState extends State<_PdfPageImage> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isDark = _readerIsDark;
     if (_bytes != null) {
       return Image.memory(
         _bytes!,

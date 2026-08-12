@@ -74,6 +74,18 @@ class _DisplaySettingsPageState extends State<DisplaySettingsPage>
             builder: (context, _) => _buildNavBarVisibilityCard(isDark),
           ),
           const SizedBox(height: 12),
+          // 页面分类跟随导航栏开关
+          ListenableBuilder(
+            listenable: SettingsService(),
+            builder: (context, _) => _buildPageTabsFollowNavCard(isDark),
+          ),
+          const SizedBox(height: 12),
+          // 默认显示内容（漫画/图书）
+          ListenableBuilder(
+            listenable: SettingsService(),
+            builder: (context, _) => _buildDefaultContentCard(isDark),
+          ),
+          const SizedBox(height: 12),
           _buildCard(
             isDark,
             title: '漫画搜索页视图',
@@ -259,6 +271,43 @@ class _DisplaySettingsPageState extends State<DisplaySettingsPage>
             onChanged: (_) {},
           ),
           const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  /// 页面分类跟随导航栏开关卡片
+  Widget _buildPageTabsFollowNavCard(bool isDark) {
+    final s = SettingsService();
+    return _buildCard(
+      isDark,
+      title: '页面分类跟随导航栏',
+      subtitle: '收藏/书架/下载页隐藏导航栏已关闭的漫画或图书分类',
+      trailing: Switch(
+        value: s.pageTabsFollowNav,
+        onChanged: (v) => s.setPageTabsFollowNav(v),
+        activeColor: JellyTheme.primary,
+      ),
+    );
+  }
+
+  /// 默认显示内容卡片（漫画/图书切换）
+  Widget _buildDefaultContentCard(bool isDark) {
+    final s = SettingsService();
+    return _buildCard(
+      isDark,
+      title: '默认显示',
+      subtitle: '收藏/书架/下载页进入时默认显示的分类',
+      trailing: JellySegmentedToggle(
+        index: s.pageDefaultContent == PageDefaultContent.manga ? 0.0 : 1.0,
+        onChanged: (i) {
+          s.setPageDefaultContent(
+            i == 0 ? PageDefaultContent.manga : PageDefaultContent.book,
+          );
+        },
+        segments: const [
+          JellySegmentData(icon: Icons.palette_rounded, label: '漫画'),
+          JellySegmentData(icon: Icons.book_rounded, label: '图书'),
         ],
       ),
     );

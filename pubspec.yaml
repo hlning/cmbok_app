@@ -37,6 +37,10 @@ dependencies:
   dio: ^5.4.0
   encrypt: ^5.0.3
   cached_network_image: ^3.3.1
+  # flutter_cache_manager/http：自定义图片缓存 HttpFileService（设浏览器 UA，
+  # 避免 dart:io 跨域重定向 UA 退化为 Dart 默认被 CDN 拦 403）
+  flutter_cache_manager: ^3.4.2
+  http: ^1.2.0
   path_provider: ^2.1.2
   permission_handler: ^11.2.0
   shared_preferences: ^2.2.2
@@ -46,6 +50,8 @@ dependencies:
   archive: ^3.6.1
   # html：HTML4 容错解析，MOBI 转出的 XHTML 非合法 XML 时回退（纯 Dart）
   html: ^0.15.4
+  # gbk_codec：gb2312/gbk 编码（来漫画等 Empire CMS 站搜索关键词需 gb2312 编码）
+  gbk_codec: ^0.4.0
   xml: ^6.5.0
   file_picker: ^8.1.4
   url_launcher: ^6.3.0
@@ -60,6 +66,9 @@ dependencies:
   flutter_pdfview: ^1.4.5
   bonsoir: ^6.0.3
   flutter_foreground_task: ^10.0.0
+  # webview_flutter：iframe 类漫画站取图（加载章节页 + runJavaScript 注入油猴 img_script，
+  # 轮询 window 结果变量拿图片 URL 列表，对齐桌面端 iframe 模式）
+  webview_flutter: ^4.10.0
 
 dev_dependencies:
   flutter_test:
@@ -87,6 +96,7 @@ flutter:
   assets:
     - assets/icons/
     - assets/images/
+    - assets/config/
 
   fonts:
     - family: inkReadingKai

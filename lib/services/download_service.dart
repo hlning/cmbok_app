@@ -3,13 +3,15 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/bookshelf.dart';
 import '../models/comic.dart';
 import 'bookshelf_service.dart';
-import 'comic_api.dart';
 import 'settings_service.dart';
+import '../source/models.dart';
+import '../source/source_manager.dart';
 
 /// 日志工具
 void _log(String message) {
@@ -18,48 +20,20 @@ void _log(String message) {
   }
 }
 
-/// 章节排序键：优先取标题中的首个数字（如"第30话"->30），回退 [order]。
-/// copymanga 的 ordered 字段不可靠（疑似全 0 或倒序），改用标题章节号排序，
-/// 使"第1话"在前、"第30话"在后。
-int chapterSortKey(String title, int order) {
-  final m = RegExp(r'\d+').firstMatch(title);
-  return m != null ? (int.tryParse(m.group(0)!) ?? order) : order;
-}
-
-/// 章节展示排序键：按「话/卷/番外」类型分组，同类内按章节号升序。
-/// 详情页 / 下载章节弹窗 / 下载管理页 / 离线阅读器统一使用本函数，
-/// 保证各处章节顺序一致，避免阅读与下载顺序对不上。
-int chapterDisplaySortKey(String title, int order) {
-  final lower = title.toLowerCase();
-  int typeRank;
-  if (title.contains('话') || title.contains('話')) {
-    typeRank = 0;
-  } else if (title.contains('卷') ||
-      title.contains('巻') ||
-      lower.contains('vol')) {
-    typeRank = 1;
-  } else if (title.contains('番外') ||
-      title.contains('外传') ||
-      title.contains('特别') ||
-      lower.contains('extra') ||
-      lower.contains('special')) {
-    typeRank = 2;
-  } else {
-    typeRank = 3;
-  }
-  final m = RegExp(r'\d+').firstMatch(title);
-  final number = m != null ? (int.tryParse(m.group(0)!) ?? order) : order;
-  // 类型在高位、章节号在低位；章节号预期远小于 100000
-  return typeRank * 100000 + (number < 0 ? 0 : number);
-}
+/// 章节统一排序比较：按 order 比较，方向由 [descending] 决定。
+/// descending=false(正序源) 升序得「第1话在前」；true(倒序源) 降序得「第1话在前」。
+/// 详情页/下载管理页/书架离线阅读器/已下载章节列表统一使用，保证各处顺序一致。
+int chapterCompare(int aOrder, int bOrder, bool descending) =>
+    descending ? bOrder.compareTo(aOrder) : aOrder.compareTo(bOrder);
 
 /// 下载状态
 enum DownloadStatus { queued, downloading, completed, failed, paused }
 
 /// 单章下载任务（含漫画/章节元信息，供下载管理页显示与持久化）
 class DownloadTask {
-  /// 唯一键：'$comicPathWord/$chapterId'
+  /// 唯一键：'$sourceId/$comicPathWord/$chapterId'（含源 id 前缀，防多源冲突）
   final String key;
+  final String? sourceId; // 所属漫画源 id（旧记录为 null，fromJson 兜底 'copymanga'）
   final String comicPathWord;
   final String comicTitle;
   final String comicCover;
@@ -85,6 +59,7 @@ class DownloadTask {
 
   DownloadTask({
     required this.key,
+    this.sourceId,
     required this.comicPathWord,
     required this.comicTitle,
     required this.comicCover,
@@ -106,8 +81,11 @@ class DownloadTask {
   factory DownloadTask.fromJson(Map<String, dynamic> j) {
     final pathWord = j['comicPathWord'] as String? ?? '';
     final chapterId = j['chapterId'] as String? ?? '';
+    // 旧记录无 sourceId -> 兜底 'copymanga'，key 自动迁移为新格式（含源 id 前缀）
+    final sourceId = j['sourceId'] as String? ?? 'copymanga';
     return DownloadTask(
-      key: '$pathWord/$chapterId',
+      key: '$sourceId/$pathWord/$chapterId',
+      sourceId: sourceId,
       comicPathWord: pathWord,
       comicTitle: j['comicTitle'] as String? ?? '',
       comicCover: j['comicCover'] as String? ?? '',
@@ -128,6 +106,7 @@ class DownloadTask {
   }
 
   Map<String, dynamic> toJson() => {
+    'sourceId': sourceId,
     'comicPathWord': comicPathWord,
     'comicTitle': comicTitle,
     'comicCover': comicCover,
@@ -153,13 +132,24 @@ class DownloadService extends ChangeNotifier {
 
   static const _recordsKey = 'downloaded_records';
 
-  final ComicApi _api = ComicApi();
-  final Dio _imageDio = Dio(
-    BaseOptions(
-      connectTimeout: const Duration(seconds: 15),
-      receiveTimeout: const Duration(seconds: 30),
-    ),
-  );
+  final Dio _imageDio =
+      Dio(
+          BaseOptions(
+            connectTimeout: const Duration(seconds: 15),
+            receiveTimeout: const Duration(seconds: 30),
+          ),
+        )
+        ..httpClientAdapter = IOHttpClientAdapter(
+          // 设浏览器 UA：dio 跨域重定向用 client.userAgent（非 req.headers UA），
+          // 默认 Dart/xxx 会被 c-nd3 等 CDN 拦 403（同 reader comicImageCacheManager 修复）
+          createHttpClient: () {
+            final client = HttpClient();
+            client.userAgent =
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+            return client;
+          },
+        );
 
   /// 全部任务（queued/downloading/completed/failed），key = '$pathWord/$chapterId'
   final Map<String, DownloadTask> _tasks = {};
@@ -168,13 +158,7 @@ class DownloadService extends ChangeNotifier {
   /// 已下载章节快速查询：pathWord -> {chapterId...}（从记录重建）
   final Map<String, Set<String>> _downloaded = {};
 
-  /// 图片下载请求头（参考 ImageLoader，copymanga 图床校验 Referer）
-  static const _imageHeaders = {
-    'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer': 'https://2025copy.com/',
-  };
+  /// 图片下载请求头改由当前漫画源提供（imageHeaders + referer），见 [_downloadOne]。
 
   /// 进行中（排队/下载中/失败）任务
   List<DownloadTask> get activeTasks =>
@@ -341,8 +325,19 @@ class DownloadService extends ChangeNotifier {
     if (name.length > maxLen) {
       name = name.substring(0, maxLen).replaceAll(RegExp(r'[.\s]+$'), '');
     }
-    if (name.isEmpty) return pathWord;
-    return '${name}_$pathWord';
+    // pathWord 同样净化（来漫画等含 / 的 pathWord 会创建意外子目录）
+    final pw = pathWord.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '_');
+    if (name.isEmpty) return pw;
+    return '${name}_$pw';
+  }
+
+  /// chapterId 作文件/目录名时的净化：URL 形式的 chapterId（如来漫画完整章节 URL）
+  /// 含 :// 等非法字符，统一替换为 _。对短 uuid（copymanga 等）无影响。
+  String _sanitizeChapterId(String chapterId) {
+    var s = chapterId.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '_').trim();
+    const maxLen = 120;
+    if (s.length > maxLen) s = s.substring(0, maxLen);
+    return s;
   }
 
   /// 章节目录（下载/读取用，自动创建）
@@ -353,7 +348,7 @@ class DownloadService extends ChangeNotifier {
   ) async {
     final base = await SettingsService.downloadBaseDir();
     final dir = Directory(
-      '${base.path}/Comics/${_comicDirName(pathWord, title)}/$chapterId',
+      '${base.path}/Comics/${_comicDirName(pathWord, title)}/${_sanitizeChapterId(chapterId)}',
     );
     if (!await dir.exists()) {
       await dir.create(recursive: true);
@@ -372,7 +367,9 @@ class DownloadService extends ChangeNotifier {
     try {
       final base = await SettingsService.downloadBaseDir();
       for (final folder in {_comicDirName(pathWord, title), pathWord}) {
-        final dir = Directory('${base.path}/Comics/$folder/$chapterId');
+        final dir = Directory(
+          '${base.path}/Comics/$folder/${_sanitizeChapterId(chapterId)}',
+        );
         if (!await dir.exists()) continue;
         final files = dir.listSync().whereType<File>().toList();
         if (files.isEmpty) continue;
@@ -388,10 +385,14 @@ class DownloadService extends ChangeNotifier {
 
   /// 加入下载队列（立即返回，不阻塞）。已下载/已在队列的跳过。
   void downloadChapters(Comic comic, List<ComicChapter> chapters) {
+    // 用漫画自身所属源（详情页 _comic 带 sourceId）；旧数据无则回退当前源
+    final sourceId = (comic.sourceId != null && comic.sourceId!.isNotEmpty)
+        ? comic.sourceId!
+        : SourceManager().current.id;
     var added = 0;
     for (final chapter in chapters) {
       if (isChapterDownloaded(comic.pathWord, chapter.id)) continue;
-      final key = '${comic.pathWord}/${chapter.id}';
+      final key = '$sourceId/${comic.pathWord}/${chapter.id}';
       final existing = _tasks[key];
       if (existing != null &&
           existing.status != DownloadStatus.completed &&
@@ -400,6 +401,7 @@ class DownloadService extends ChangeNotifier {
       }
       _tasks[key] = DownloadTask(
         key: key,
+        sourceId: sourceId,
         comicPathWord: comic.pathWord,
         comicTitle: comic.title,
         comicCover: comic.cover,
@@ -449,10 +451,32 @@ class DownloadService extends ChangeNotifier {
 
   Future<void> _downloadOne(DownloadTask task) async {
     try {
-      final urls = await _api.getChapterImages(
-        task.comicPathWord,
-        task.chapterId,
+      // 用任务记录的源取图（多源后旧任务仍属其源），找不到源回退当前源
+      final source =
+          SourceManager().getSource(task.sourceId ?? 'copymanga') ??
+          SourceManager().current;
+      final cmanga = CManga(
+        id: task.comicPathWord,
+        sourceId: source.id,
+        title: task.comicTitle,
+        cover: task.comicCover,
       );
+      final cchapter = CChapter(
+        id: task.chapterId,
+        sourceId: source.id,
+        mangaId: task.comicPathWord,
+        name: task.chapterTitle,
+        order: task.chapterOrder,
+      );
+      final urls = await source.getChapterImages(cmanga, cchapter);
+      _log(
+        '取图 ${task.chapterTitle}: ${urls.length} 张'
+        '${urls.isNotEmpty ? ', 首=${urls.first}' : ''}',
+      );
+      // 图片下载头用源提供的 UA + Referer（多源图床校验不同）
+      final headers = <String, dynamic>{...source.imageHeaders};
+      final ref = source.refererForChapter(cchapter);
+      if (ref != null) headers['Referer'] = ref;
       if (!_tasks.containsKey(task.key)) return; // 已取消（移除）
       if (task.status == DownloadStatus.paused) return; // 已暂停
       if (urls.isEmpty) {
@@ -504,6 +528,7 @@ class DownloadService extends ChangeNotifier {
         maxImages,
         existing,
         existing.length,
+        headers,
       );
       if (!_tasks.containsKey(task.key)) return; // 已取消（移除）
       if (task.status == DownloadStatus.paused) return; // 已暂停
@@ -529,6 +554,7 @@ class DownloadService extends ChangeNotifier {
         author: task.comicAuthor,
         totalChapters: task.totalChapters,
         pathWord: task.comicPathWord,
+        sourceId: task.sourceId,
       );
       await BookshelfService().addToBookshelf(
         BookshelfService.presetDownloaded,
@@ -575,6 +601,7 @@ class DownloadService extends ChangeNotifier {
     int concurrency,
     Set<int> existing,
     int alreadyDone,
+    Map<String, dynamic> headers,
   ) async {
     final total = urls.length;
     // 仅下载缺失的图片
@@ -607,7 +634,7 @@ class DownloadService extends ChangeNotifier {
           .download(
             urls[i],
             file.path,
-            options: Options(headers: _imageHeaders),
+            options: Options(headers: headers),
             cancelToken: task.cancelToken,
           )
           .then((_) {
@@ -627,6 +654,10 @@ class DownloadService extends ChangeNotifier {
             }
             // 超时/网络错误：跳过单张，继续下载其余
             failedCount++;
+            _log(
+              '单张失败[${task.chapterTitle}] #${i + 1}/${urls.length} '
+              '${urls[i]}: $e',
+            );
             task.missingImages = failedCount;
             try {
               if (file.existsSync()) file.deleteSync();
@@ -891,13 +922,22 @@ class DownloadService extends ChangeNotifier {
           ),
         )
         .toList();
-    list.sort(
-      (a, b) => chapterDisplaySortKey(
-        a.title,
-        a.order,
-      ).compareTo(chapterDisplaySortKey(b.title, b.order)),
-    );
+    final desc =
+        SourceManager()
+            .getSource(sourceIdForComic(pathWord) ?? '')
+            ?.chapterOrderDescending ??
+        false;
+    list.sort((a, b) => chapterCompare(a.order, b.order, desc));
     return list;
+  }
+
+  /// 某漫画下载记录所属源 id（取首条匹配任务；无下载记录则 null）。
+  /// 供书架角标显示「从哪个源下载的」，不受当前切源影响。
+  String? sourceIdForComic(String pathWord) {
+    for (final t in _tasks.values) {
+      if (t.comicPathWord == pathWord) return t.sourceId;
+    }
+    return null;
   }
 
   Future<void> _deleteFiles(
@@ -909,7 +949,9 @@ class DownloadService extends ChangeNotifier {
       final base = await SettingsService.downloadBaseDir();
       // 删新目录与旧 pathWord 目录（兼容历史下载残留）
       for (final folder in {_comicDirName(pathWord, title), pathWord}) {
-        final dir = Directory('${base.path}/Comics/$folder/$chapterId');
+        final dir = Directory(
+          '${base.path}/Comics/$folder/${_sanitizeChapterId(chapterId)}',
+        );
         if (await dir.exists()) {
           await dir.delete(recursive: true);
         }
@@ -981,14 +1023,15 @@ class DownloadService extends ChangeNotifier {
         task.chapterTitle.isEmpty ? task.chapterId : task.chapterTitle,
         maxLen: 40,
       );
-      // 追加 chapterId 前8位：既防重名章节互相覆盖，又控制文件名总长
-      final shortChapterId = task.chapterId.length > 8
-          ? task.chapterId.substring(0, 8)
-          : task.chapterId;
+      // 追加净化后 chapterId 末段：URL 形式取文件名段（来漫画 28140002.html），
+      // 短 id 原样；防重名且避免 :// 非法字符。
+      final sid = _sanitizeChapterId(task.chapterId);
+      final lastSep = sid.lastIndexOf('_');
+      final shortChapterId = lastSep >= 0 ? sid.substring(lastSep + 1) : sid;
       final epubPath =
           '${epubDir.path}/${safeComic}_${safeChapter}_$shortChapterId.epub';
 
-      final bookId = 'cmbok-${task.comicPathWord}-${task.chapterId}';
+      final bookId = 'cmbok-${task.comicPathWord}-$sid';
       final title = task.chapterTitle.isEmpty
           ? task.comicTitle
           : task.chapterTitle;

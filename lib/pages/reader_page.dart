@@ -3,16 +3,22 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import '../models/comic.dart';
 import '../services/bookshelf_service.dart';
-import '../services/comic_api.dart';
+import '../source/adapter.dart';
+import '../source/image_cache_manager.dart';
+import '../source/source_manager.dart';
 import '../services/download_service.dart';
+import '../services/platform_service.dart';
 import '../services/reading_progress_service.dart';
+import '../services/reader_override_service.dart';
 import '../services/settings_service.dart';
 import '../theme/jelly_theme.dart';
+import '../widgets/pomodoro_button.dart';
 
 /// 漫画阅读页面
 class ReaderPage extends StatefulWidget {
@@ -36,8 +42,6 @@ class ReaderPage extends StatefulWidget {
 }
 
 class _ReaderPageState extends State<ReaderPage> {
-  final ComicApi _api = ComicApi();
-
   late ComicChapter _currentChapter;
   List<String> _images = [];
   bool _isLoading = true;
@@ -48,6 +52,9 @@ class _ReaderPageState extends State<ReaderPage> {
   String? _lastAppliedStatus;
   bool _showControls = true;
   bool _useLocal = false; // 是否使用本地已下载图片
+
+  /// 在线图片请求头（防盗链/UA，随当前源 imageHeaders+referer）
+  Map<String, String> _imageHeaders = const {};
 
   /// 翻页模式控制器（程序化翻页用）
   late PageController _pageController;
@@ -84,13 +91,46 @@ class _ReaderPageState extends State<ReaderPage> {
   /// 不再恢复历史滚动位置，切章节/切回已读章节都从第 0 页开始。
   PageStorageBucket _galleryBucket = PageStorageBucket();
 
+  /// gallery 上次构建所用的阅读模式，用于检测模式切换以刷新 gallery。
+  ReadingMode _builtMode = ReadingMode.pageTurn;
+
+  /// gallery 上次构建所用的双页状态（横屏+开关+翻页模式），变化时重建 PageController。
+  bool _builtDoublePage = false;
+
   /// 当前是否为拼页模式
-  bool get _isContinuousMode =>
-      SettingsService().readingMode == ReadingMode.continuous;
+  bool get _isContinuousMode => _effectiveReadingMode == ReadingMode.continuous;
 
   /// 当前是否为消散模式（逐页交叉淡入淡出）
-  bool get _isDissolveMode =>
-      SettingsService().readingMode == ReadingMode.dissolve;
+  bool get _isDissolveMode => _effectiveReadingMode == ReadingMode.dissolve;
+
+  /// 双页模式：左右翻页/消散模式 + 开关开启 + 横屏 时生效（拼页模式不支持）
+  bool get _isDoublePage {
+    if (_effectiveReadingMode != ReadingMode.pageTurn &&
+        _effectiveReadingMode != ReadingMode.dissolve) {
+      return false;
+    }
+    if (!ReaderOverrideService().effectiveDoublePageManga(
+      widget.comic.pathWord,
+    )) {
+      return false;
+    }
+    return MediaQuery.orientationOf(context) == Orientation.landscape;
+  }
+
+  /// 双页 spread 映射（首页单独成页，保证跨页图不错位）：
+  /// spread0=图0（单），spreadN(N>0)=图(2N-1)+图(2N)。
+  int _imageToSpread(int imageIndex) =>
+      imageIndex <= 0 ? 0 : (imageIndex + 1) ~/ 2;
+  int _spreadLeftImage(int spread) => spread == 0 ? 0 : spread * 2 - 1;
+  int _spreadRightImage(int spread) => spread * 2;
+  int get _spreadCount => _images.isEmpty ? 0 : 1 + _images.length ~/ 2;
+  int get _currentSpread => _imageToSpread(_currentIndex);
+  int get _controllerInitialPage =>
+      _isDoublePage ? _currentSpread : _currentIndex;
+
+  /// 当前生效的漫画阅读模式：独立设置开启时取 per-item 覆盖，否则全局
+  ReadingMode get _effectiveReadingMode =>
+      ReaderOverrideService().effectiveMangaMode(widget.comic.pathWord);
 
   @override
   void initState() {
@@ -99,17 +139,80 @@ class _ReaderPageState extends State<ReaderPage> {
     _currentIndex = widget.initialPage < 0 ? 0 : widget.initialPage;
     _pageController = PageController(initialPage: _currentIndex);
     _itemPositionsListener.itemPositions.addListener(_onItemPositionsChanged);
+    SettingsService().addListener(_onReaderSettingsChanged);
+    ReaderOverrideService().addListener(_onReaderSettingsChanged);
+    // 沉浸阅读：延后到路由转场结束再隐藏顶部状态栏（保留底部导航栏），
+    // 避免系统栏切换与 MaterialPageRoute 转场叠加造成进入卡顿。
+    Future.delayed(const Duration(milliseconds: 350), () {
+      if (!mounted) return;
+      SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.manual,
+        overlays: [SystemUiOverlay.bottom],
+      );
+    });
     _loadImages();
+    PlatformService.onVolumeKey = _onVolumeKey;
+    PlatformService.setVolumeKeyNav(
+      ReaderOverrideService().effectiveVolumeKeyTurnManga(
+        widget.comic.pathWord,
+      ),
+    );
   }
 
   @override
   void dispose() {
+    PlatformService.onVolumeKey = null;
+    PlatformService.setVolumeKeyNav(false);
     _itemPositionsListener.itemPositions.removeListener(
       _onItemPositionsChanged,
     );
+    SettingsService().removeListener(_onReaderSettingsChanged);
+    ReaderOverrideService().removeListener(_onReaderSettingsChanged);
     _pageController.dispose();
     _continuousPageNotifier.dispose();
+    // 离开阅读器：恢复状态栏（App 默认 edge-to-edge）
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
+  }
+
+  /// 阅读（全局或独立）设置变化：阅读模式改变时刷新 gallery（重建控件、
+  /// 重新定位当前页）；双页开关变化时 rebuild，由 _buildGallery 同步重建
+  /// PageController；预加载/反转无需重建控件。
+  void _onReaderSettingsChanged() {
+    if (!mounted || _images.isEmpty) return;
+    PlatformService.setVolumeKeyNav(
+      ReaderOverrideService().effectiveVolumeKeyTurnManga(
+        widget.comic.pathWord,
+      ),
+    );
+    if (_effectiveReadingMode != _builtMode) {
+      _refreshGallery();
+      return;
+    }
+    if (_isDoublePage != _builtDoublePage) {
+      setState(() {});
+    }
+  }
+
+  /// 刷新 gallery（模式切换用）：bump _loadId 重建全新实例、PageController
+  /// 指向当前页；拼页模式 post-frame 跳到当前页。不重新拉图。
+  void _refreshGallery() {
+    final initialPage = _controllerInitialPage;
+    final isDouble = _isDoublePage;
+    setState(() {
+      _loadId++; // 新 key，确保 gallery 全新实例
+      _galleryBucket = PageStorageBucket(); // 空桶，杜绝历史偏移恢复
+      _builtMode = _effectiveReadingMode;
+      _builtDoublePage = isDouble;
+    });
+    _pageController = PageController(initialPage: initialPage);
+    if (_isContinuousMode) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _itemScrollController.isAttached) {
+          _itemScrollController.jumpTo(index: _currentIndex);
+        }
+      });
+    }
   }
 
   Future<void> _loadImages() async {
@@ -147,13 +250,27 @@ class _ReaderPageState extends State<ReaderPage> {
         });
         return;
       }
-      // 回退网络加载
-      final images = await _api.getChapterImages(
+      // 回退网络加载：用漫画自身所属源（书架多源时 current 未必匹配）
+      final source =
+          (widget.comic.sourceId != null && widget.comic.sourceId!.isNotEmpty)
+          ? (SourceManager().getSource(widget.comic.sourceId!) ??
+                SourceManager().current)
+          : SourceManager().current;
+      final cchapter = comicChapterToCChapter(
+        _currentChapter,
+        source.id,
         widget.comic.pathWord,
-        _currentChapter.id,
       );
+      final images = await source.getChapterImages(
+        comicToCManga(widget.comic, source.id),
+        cchapter,
+      );
+      final headers = <String, String>{...source.imageHeaders};
+      final ref = source.refererForChapter(cchapter);
+      if (ref != null) headers['Referer'] = ref;
       setState(() {
         _images = images;
+        _imageHeaders = headers;
       });
     } catch (e) {
       setState(() {
@@ -211,13 +328,22 @@ class _ReaderPageState extends State<ReaderPage> {
 
   /// 在线阅读时预加载当前页之后的若干张图片，提升翻页流畅度。
   /// 仅网络图片生效（本地已下载图片读取快，无需预加载）；仅向前预加载。
-  /// 数量由设置项 preloadImageCount 控制（2~10，默认5）。
+  /// 数量由设置项 preloadImageCount 控制（2~10，默认5），独立设置开启时取 per-item。
   void _preloadAhead(int fromIndex) {
     if (_useLocal || _images.isEmpty) return;
-    final count = SettingsService().preloadImageCount;
+    final count = ReaderOverrideService().effectivePreload(
+      widget.comic.pathWord,
+    );
     final end = (fromIndex + 1 + count).clamp(0, _images.length);
     for (var i = fromIndex + 1; i < end; i++) {
-      precacheImage(CachedNetworkImageProvider(_images[i]), context);
+      precacheImage(
+        CachedNetworkImageProvider(
+          _images[i],
+          headers: _imageHeaders,
+          cacheManager: comicImageCacheManager,
+        ),
+        context,
+      );
     }
   }
 
@@ -261,6 +387,325 @@ class _ReaderPageState extends State<ReaderPage> {
     });
     _pageController = PageController(initialPage: 0);
     _loadImages();
+  }
+
+  // ---------------- 阅读设置 ----------------
+
+  /// 阅读设置弹层：独立设置开关 + 漫画阅读模式 + 在线预加载图片数。
+  /// 草稿式，点「确认」一次性写入（独立设置开启写 per-item 覆盖，否则写全局）。
+  void _showReaderSettingsSheet() {
+    final pathWord = widget.comic.pathWord;
+    final o = ReaderOverrideService();
+    bool draftIndependent = o.isIndependentManga(pathWord);
+    ReadingMode draftMode = o.effectiveMangaMode(pathWord);
+    int draftPreload = o.effectivePreload(pathWord);
+    bool draftReverseTap = o.effectiveReverseTapManga(pathWord);
+    bool draftDoublePage = o.effectiveDoublePageManga(pathWord);
+    bool draftShowHud = o.effectiveShowHudManga(pathWord);
+    bool draftVolumeKey = o.effectiveVolumeKeyTurnManga(pathWord);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.black87,
+      barrierColor: Colors.black54,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          return SafeArea(
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        const Text(
+                          '阅读设置',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          '独立设置',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: draftIndependent
+                                ? JellyTheme.primary
+                                : Colors.white70,
+                          ),
+                        ),
+                        Switch(
+                          value: draftIndependent,
+                          activeColor: JellyTheme.primary,
+                          onChanged: (v) =>
+                              setSheet(() => draftIndependent = v),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        draftIndependent ? '当前修改仅对本书生效' : '当前为全局设置，修改影响所有漫画',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: draftIndependent
+                              ? JellyTheme.primary.withValues(alpha: 0.9)
+                              : Colors.white54,
+                        ),
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        const Text(
+                          '阅读模式',
+                          style: TextStyle(fontSize: 14, color: Colors.white),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Row(
+                            children: [
+                              _modeChip(
+                                '左右',
+                                draftMode == ReadingMode.pageTurn,
+                                () => setSheet(
+                                  () => draftMode = ReadingMode.pageTurn,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              _modeChip(
+                                '消散',
+                                draftMode == ReadingMode.dissolve,
+                                () => setSheet(
+                                  () => draftMode = ReadingMode.dissolve,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              _modeChip(
+                                '拼页',
+                                draftMode == ReadingMode.continuous,
+                                () => setSheet(
+                                  () => draftMode = ReadingMode.continuous,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Text(
+                          '预加载',
+                          style: TextStyle(fontSize: 14, color: Colors.white),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Slider(
+                            value: draftPreload.toDouble(),
+                            min: SettingsService.minPreloadImages.toDouble(),
+                            max: SettingsService.maxPreloadImages.toDouble(),
+                            divisions:
+                                SettingsService.maxPreloadImages -
+                                SettingsService.minPreloadImages,
+                            activeColor: JellyTheme.primary,
+                            onChanged: (v) =>
+                                setSheet(() => draftPreload = v.round()),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 28,
+                          child: Text(
+                            '$draftPreload',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Text(
+                          '翻页反转',
+                          style: TextStyle(fontSize: 14, color: Colors.white),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Text(
+                            '左点下一页、右点上一页',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.white54,
+                            ),
+                          ),
+                        ),
+                        Switch(
+                          value: draftReverseTap,
+                          activeColor: JellyTheme.primary,
+                          onChanged: (v) => setSheet(() => draftReverseTap = v),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        const Text(
+                          '双页模式',
+                          style: TextStyle(fontSize: 14, color: Colors.white),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Text(
+                            '横屏左右并排',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.white54,
+                            ),
+                          ),
+                        ),
+                        Switch(
+                          value: draftDoublePage,
+                          activeColor: JellyTheme.primary,
+                          onChanged: (v) => setSheet(() => draftDoublePage = v),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        const Text(
+                          '信息栏',
+                          style: TextStyle(fontSize: 14, color: Colors.white),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Text(
+                            '显示时间、页码、进度',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.white54,
+                            ),
+                          ),
+                        ),
+                        Switch(
+                          value: draftShowHud,
+                          activeColor: JellyTheme.primary,
+                          onChanged: (v) => setSheet(() => draftShowHud = v),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        const Text(
+                          '音量键翻页',
+                          style: TextStyle(fontSize: 14, color: Colors.white),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Text(
+                            '按音量上/下键翻页（会接管音量键）',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.white54,
+                            ),
+                          ),
+                        ),
+                        Switch(
+                          value: draftVolumeKey,
+                          activeColor: JellyTheme.primary,
+                          onChanged: (v) => setSheet(() => draftVolumeKey = v),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.white70,
+                          ),
+                          child: const Text('取消'),
+                        ),
+                        const Spacer(),
+                        FilledButton(
+                          onPressed: () async {
+                            await o.setIndependentManga(
+                              pathWord,
+                              draftIndependent,
+                            );
+                            await o.setMangaMode(pathWord, draftMode);
+                            await o.setMangaPreload(pathWord, draftPreload);
+                            await o.setMangaReverseTap(
+                              pathWord,
+                              draftReverseTap,
+                            );
+                            await o.setMangaDoublePage(
+                              pathWord,
+                              draftDoublePage,
+                            );
+                            await o.setMangaShowHud(pathWord, draftShowHud);
+                            await o.setMangaVolumeKeyTurn(
+                              pathWord,
+                              draftVolumeKey,
+                            );
+                            if (ctx.mounted) Navigator.pop(ctx);
+                          },
+                          child: const Text('确认'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _modeChip(String label, bool selected, VoidCallback onTap) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: selected
+                ? JellyTheme.primary
+                : Colors.white.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              color: selected ? Colors.white : Colors.white70,
+              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   // ---------------- 目录 ----------------
@@ -433,11 +878,12 @@ class _ReaderPageState extends State<ReaderPage> {
     if (_images.isEmpty) return;
     final page = _isContinuousMode
         ? _continuousPageNotifier.value
-        : _currentIndex;
+        : (_isDoublePage ? _currentSpread : _currentIndex);
+    final pageCount = _isDoublePage ? _spreadCount : _images.length;
     final allChapters = _allChapters;
     final ci = allChapters.indexWhere((c) => c.id == _currentChapter.id);
     final isLastChapter = ci < 0 || ci >= allChapters.length - 1;
-    final finished = page + 1 >= _images.length && isLastChapter;
+    final finished = page + 1 >= pageCount && isLastChapter;
     final target = finished
         ? BookshelfService.presetFinished
         : BookshelfService.presetReading;
@@ -477,13 +923,25 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 
   /// 点击翻页区域：左1/3 上一页/上一话，右1/3 下一页/下一话，中间切换控制栏
+  /// 翻页反转开启时左右对调。
+  /// 音量键翻页：下=下一页，上=上一页（复用点击翻页逻辑，覆盖所有模式+章节边界）。
+  void _onVolumeKey(String dir) {
+    if (!mounted || _images.isEmpty) return;
+    dir == 'down' ? _onTapRight() : _onTapLeft();
+  }
+
   void _handleTap(TapUpDetails details) {
     final size = MediaQuery.sizeOf(context);
     final dx = details.globalPosition.dx;
-    if (dx < size.width / 3) {
-      _onTapLeft();
-    } else if (dx > size.width * 2 / 3) {
-      _onTapRight();
+    final reverse = ReaderOverrideService().effectiveReverseTapManga(
+      widget.comic.pathWord,
+    );
+    final tapLeft = dx < size.width / 3;
+    final tapRight = dx > size.width * 2 / 3;
+    if (tapLeft) {
+      reverse ? _onTapRight() : _onTapLeft();
+    } else if (tapRight) {
+      reverse ? _onTapLeft() : _onTapRight();
     } else {
       _toggleControls();
     }
@@ -495,6 +953,15 @@ class _ReaderPageState extends State<ReaderPage> {
       return;
     }
     if (_isDissolveMode) {
+      if (_isDoublePage) {
+        final spread = _currentSpread;
+        if (spread > 0) {
+          _goDissolvePage(_spreadLeftImage(spread - 1));
+        } else {
+          _prevChapter();
+        }
+        return;
+      }
       if (_currentIndex > 0) {
         _goDissolvePage(_currentIndex - 1);
       } else {
@@ -502,7 +969,8 @@ class _ReaderPageState extends State<ReaderPage> {
       }
       return;
     }
-    if (_currentIndex > 0) {
+    final canPrev = _isDoublePage ? _currentSpread > 0 : _currentIndex > 0;
+    if (canPrev) {
       _pageController.previousPage(
         duration: const Duration(milliseconds: 250),
         curve: Curves.easeOutCubic,
@@ -518,6 +986,15 @@ class _ReaderPageState extends State<ReaderPage> {
       return;
     }
     if (_isDissolveMode) {
+      if (_isDoublePage) {
+        final spread = _currentSpread;
+        if (spread < _spreadCount - 1) {
+          _goDissolvePage(_spreadLeftImage(spread + 1));
+        } else {
+          _nextChapter();
+        }
+        return;
+      }
       if (_currentIndex < _images.length - 1) {
         _goDissolvePage(_currentIndex + 1);
       } else {
@@ -525,7 +1002,10 @@ class _ReaderPageState extends State<ReaderPage> {
       }
       return;
     }
-    if (_currentIndex < _images.length - 1) {
+    final canNext = _isDoublePage
+        ? _currentSpread < _spreadCount - 1
+        : _currentIndex < _images.length - 1;
+    if (canNext) {
       _pageController.nextPage(
         duration: const Duration(milliseconds: 250),
         curve: Curves.easeOutCubic,
@@ -674,7 +1154,7 @@ class _ReaderPageState extends State<ReaderPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(children: [_buildGallery(), _buildControls()]),
+      body: Stack(children: [_buildGallery(), _buildHud(), _buildControls()]),
     );
   }
 
@@ -713,11 +1193,20 @@ class _ReaderPageState extends State<ReaderPage> {
       );
     }
 
+    // 双页状态变化（横屏切换 / 双页开关变化）：同步重建 PageController
+    // + gallery 实例。_currentIndex 保持 image index，initialPage 转 spread。
+    if (_isDoublePage != _builtDoublePage) {
+      _builtDoublePage = _isDoublePage;
+      _pageController = PageController(initialPage: _controllerInitialPage);
+      _loadId++;
+      _galleryBucket = PageStorageBucket();
+    }
     final Widget gallery = _isContinuousMode
         ? _buildContinuousGallery()
         : _isDissolveMode
         ? _buildDissolveGallery()
         : _buildPagedGallery();
+    _builtMode = _effectiveReadingMode;
     // 章节加载完成时淡入过渡
     // 外层 PageStorage 用每次加载重建的空桶，让 ScrollablePositionedList
     // initState 读 PageStorage 拿到 null，从第 0 页开始（不恢复历史偏移）
@@ -736,6 +1225,7 @@ class _ReaderPageState extends State<ReaderPage> {
 
   /// 翻页模式：PhotoViewGallery 逐页翻页（横向=左右翻页，竖向=上下翻页）
   Widget _buildPagedGallery({Axis scrollDirection = Axis.horizontal}) {
+    if (_isDoublePage) return _buildDoublePageGallery();
     return GestureDetector(
       onTapUp: _handleTap,
       child: PhotoViewGallery.builder(
@@ -745,7 +1235,11 @@ class _ReaderPageState extends State<ReaderPage> {
           return PhotoViewGalleryPageOptions(
             imageProvider: _useLocal
                 ? FileImage(File(_images[index]))
-                : CachedNetworkImageProvider(_images[index]),
+                : CachedNetworkImageProvider(
+                    _images[index],
+                    headers: _imageHeaders,
+                    cacheManager: comicImageCacheManager,
+                  ),
             initialScale: PhotoViewComputedScale.contained,
             minScale: PhotoViewComputedScale.contained,
             maxScale: PhotoViewComputedScale.covered * 2,
@@ -796,6 +1290,84 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
+  /// 双页模式：PageView 逐 spread 翻页，每 spread 左右并排两图（首页单独）
+  Widget _buildDoublePageGallery() {
+    return GestureDetector(
+      onTapUp: _handleTap,
+      child: PageView.builder(
+        controller: _pageController,
+        physics: const ClampingScrollPhysics(),
+        itemCount: _spreadCount,
+        onPageChanged: (spread) {
+          final imageIndex = _spreadLeftImage(spread);
+          ReadingProgressService().updatePageIndex(
+            widget.comic.pathWord,
+            _currentChapter.id,
+            imageIndex,
+          );
+          setState(() {
+            _currentIndex = imageIndex;
+          });
+          _preloadAhead(imageIndex);
+          _applyReadingStatus();
+        },
+        itemBuilder: (context, spread) => _buildSpread(spread),
+      ),
+    );
+  }
+
+  /// 双页 spread：首页或末尾单图时单图占满，否则左右两图并排
+  /// 左图贴右、右图贴左，让竖图 contain 后多余黑边留到屏幕外侧而非中间。
+  Widget _buildSpread(int spread) {
+    final left = _spreadLeftImage(spread);
+    final right = _spreadRightImage(spread);
+    final hasRight = right < _images.length;
+    if (spread == 0 || !hasRight) {
+      return _buildSingleImage(spread == 0 ? 0 : left);
+    }
+    return Row(
+      children: [
+        Expanded(
+          child: _buildSingleImage(left, alignment: Alignment.centerRight),
+        ),
+        const SizedBox(width: 2),
+        Expanded(
+          child: _buildSingleImage(right, alignment: Alignment.centerLeft),
+        ),
+      ],
+    );
+  }
+
+  /// 双页模式单图：在线用 CachedNetworkImage，本地用 Image.file
+  Widget _buildSingleImage(
+    int index, {
+    Alignment alignment = Alignment.center,
+  }) {
+    if (_useLocal) {
+      return Image.file(
+        File(_images[index]),
+        fit: BoxFit.contain,
+        alignment: alignment,
+        errorBuilder: (c, e, s) => _buildBrokenImage(index),
+      );
+    }
+    return CachedNetworkImage(
+      imageUrl: _images[index],
+      httpHeaders: _imageHeaders,
+      cacheManager: comicImageCacheManager,
+      fit: BoxFit.contain,
+      alignment: alignment,
+      placeholder: (c, u) => const Center(
+        child: SizedBox(
+          width: 30,
+          height: 30,
+          child: CircularProgressIndicator(),
+        ),
+      ),
+      errorWidget: (c, u, e) => _buildBrokenImage(index),
+    );
+  }
+
   /// 消散模式：逐页显示，换页时旧页淡出、新页淡入（交叉淡入淡出）
   Widget _buildDissolveGallery() {
     return GestureDetector(
@@ -808,14 +1380,57 @@ class _ReaderPageState extends State<ReaderPage> {
           switchOutCurve: Curves.easeInOut,
           transitionBuilder: (child, anim) =>
               FadeTransition(opacity: anim, child: child),
-          child: _buildDissolveImage(_currentIndex),
+          child: _isDoublePage
+              ? _buildDissolveSpread(_currentSpread)
+              : _buildDissolveImage(_currentIndex),
         ),
       ),
     );
   }
 
+  /// 消散模式双页 spread：首页或末尾单图时单图占满，否则左右两图并排。
+  /// 外层 SizedBox.expand 用 spread 做 key 触发 AnimatedSwitcher 交叉淡入淡出。
+  /// 左图贴右、右图贴左，让竖图 contain 后多余黑边留到屏幕外侧而非中间。
+  Widget _buildDissolveSpread(int spread) {
+    final left = _spreadLeftImage(spread);
+    final right = _spreadRightImage(spread);
+    final hasRight = right < _images.length;
+    final Widget content;
+    if (spread == 0 || !hasRight) {
+      content = _buildDissolveImage(spread == 0 ? 0 : left, standalone: false);
+    } else {
+      content = Row(
+        children: [
+          Expanded(
+            child: _buildDissolveImage(
+              left,
+              standalone: false,
+              alignment: Alignment.centerRight,
+            ),
+          ),
+          const SizedBox(width: 2),
+          Expanded(
+            child: _buildDissolveImage(
+              right,
+              standalone: false,
+              alignment: Alignment.centerLeft,
+            ),
+          ),
+        ],
+      );
+    }
+    return SizedBox.expand(
+      key: ValueKey('dissolve_spread_$spread'),
+      child: content,
+    );
+  }
+
   /// 消散模式单页图（按 index 取 key，AnimatedSwitcher 据此触发交叉淡入淡出）
-  Widget _buildDissolveImage(int index) {
+  Widget _buildDissolveImage(
+    int index, {
+    bool standalone = true,
+    Alignment alignment = Alignment.center,
+  }) {
     if (index < 0 || index >= _images.length) {
       return const SizedBox.shrink();
     }
@@ -829,13 +1444,17 @@ class _ReaderPageState extends State<ReaderPage> {
       image = Image.file(
         File(_images[index]),
         fit: BoxFit.contain,
+        alignment: alignment,
         cacheWidth: dw,
         errorBuilder: (context, error, stackTrace) => _buildBrokenImage(index),
       );
     } else {
       image = CachedNetworkImage(
         imageUrl: _images[index],
+        httpHeaders: _imageHeaders,
+        cacheManager: comicImageCacheManager,
         fit: BoxFit.contain,
+        alignment: alignment,
         memCacheWidth: dw,
         fadeInDuration: Duration.zero,
         fadeOutDuration: Duration.zero,
@@ -849,7 +1468,10 @@ class _ReaderPageState extends State<ReaderPage> {
         errorWidget: (context, url, error) => _buildBrokenImage(index),
       );
     }
-    return SizedBox.expand(key: ValueKey(index), child: image);
+    return SizedBox.expand(
+      key: standalone ? ValueKey(index) : null,
+      child: image,
+    );
   }
 
   /// 拼页模式：所有图片纵向连续滚动，按索引定位/翻页
@@ -900,6 +1522,8 @@ class _ReaderPageState extends State<ReaderPage> {
     return CachedNetworkImage(
       key: imageKey,
       imageUrl: _images[index],
+      httpHeaders: _imageHeaders,
+      cacheManager: comicImageCacheManager,
       fit: BoxFit.contain,
       width: double.infinity,
       memCacheWidth: dw,
@@ -941,7 +1565,129 @@ class _ReaderPageState extends State<ReaderPage> {
             Text('${idx + 1} / ${_images.length}', style: style),
       );
     }
+    if (_isDoublePage) {
+      final left = _currentIndex + 1;
+      final right = _spreadRightImage(_currentSpread);
+      final hasRight = right < _images.length;
+      final text = hasRight
+          ? '$left-${right + 1} / ${_images.length}'
+          : '$left / ${_images.length}';
+      return Text(text, style: style);
+    }
     return Text('${_currentIndex + 1} / ${_images.length}', style: style);
+  }
+
+  // ---------------- 常驻信息栏（时间 / 页码 / 进度 / 漫画名） ----------------
+
+  /// 常驻 HUD：左上时钟、右上页码、左下漫画名、右下进度百分比。
+  /// ListenableBuilder 自响应设置变化，关闭时返回空 widget。
+  Widget _buildHud() {
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        SettingsService(),
+        ReaderOverrideService(),
+      ]),
+      builder: (context, _) {
+        if (!ReaderOverrideService().effectiveShowHudManga(
+          widget.comic.pathWord,
+        )) {
+          return const SizedBox.shrink();
+        }
+        final style = TextStyle(
+          fontSize: 11,
+          color: Colors.white.withValues(alpha: 0.5),
+          shadows: const [
+            Shadow(
+              color: Colors.black54,
+              blurRadius: 2,
+              offset: Offset(0.5, 0.5),
+            ),
+          ],
+        );
+        final padTop = MediaQuery.paddingOf(context).top + 8;
+        final padBottom = MediaQuery.paddingOf(context).bottom + 8;
+        const padH = 16.0;
+        return IgnorePointer(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Positioned(
+                top: padTop,
+                left: padH,
+                child: _ClockText(style: style),
+              ),
+              Positioned(
+                top: padTop,
+                right: padH,
+                child: _buildHudPageText(style),
+              ),
+              Positioned(
+                bottom: padBottom,
+                left: padH,
+                right: padH,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        widget.comic.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: style,
+                      ),
+                    ),
+                    _buildHudPctText(style),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildHudPageText(TextStyle style) {
+    if (_images.isEmpty) return const SizedBox.shrink();
+    if (_isContinuousMode) {
+      return ValueListenableBuilder<int>(
+        valueListenable: _continuousPageNotifier,
+        builder: (_, idx, _) =>
+            Text('${idx + 1} / ${_images.length}', style: style),
+      );
+    }
+    return Text(_pageText(_currentIndex), style: style);
+  }
+
+  Widget _buildHudPctText(TextStyle style) {
+    if (_images.isEmpty) return const SizedBox.shrink();
+    if (_isContinuousMode) {
+      return ValueListenableBuilder<int>(
+        valueListenable: _continuousPageNotifier,
+        builder: (_, idx, _) {
+          final pct = ((idx + 1) / _images.length * 100)
+              .clamp(0, 100)
+              .toStringAsFixed(0);
+          return Text('$pct%', style: style);
+        },
+      );
+    }
+    final pct = ((_currentIndex + 1) / _images.length * 100)
+        .clamp(0, 100)
+        .toStringAsFixed(0);
+    return Text('$pct%', style: style);
+  }
+
+  String _pageText(int idx) {
+    if (_images.isEmpty) return '';
+    if (_isDoublePage) {
+      final left = idx + 1;
+      final right = _spreadRightImage(_imageToSpread(idx));
+      final hasRight = right < _images.length;
+      return hasRight
+          ? '$left-${right + 1} / ${_images.length}'
+          : '$left / ${_images.length}';
+    }
+    return '${idx + 1} / ${_images.length}';
   }
 
   Widget _buildControls() {
@@ -971,79 +1717,97 @@ class _ReaderPageState extends State<ReaderPage> {
               iconTheme: const IconThemeData(color: Colors.white),
             ),
             const Spacer(),
-            // 底部栏
+            // 底部栏：颜色铺到底部边缘，SafeArea 抬高内容避开系统导航栏/手势条
             Container(
               color: Colors.black87,
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // 页码滑块（拼页模式下不显示）
-                  if (_images.isNotEmpty && !_isContinuousMode)
-                    Slider(
-                      value: _currentIndex.toDouble(),
-                      min: 0,
-                      max: (_images.length - 1).toDouble(),
-                      onChanged: (value) {
-                        setState(() {
-                          _currentIndex = value.toInt();
-                        });
-                      },
-                      onChangeEnd: (value) {
-                        // 拖动/点击结束：跳转到目标页（onPageChanged 会同步 _currentIndex 与进度）
-                        if (_pageController.hasClients) {
-                          _pageController.jumpToPage(value.toInt());
-                        }
-                      },
-                    ),
-                  const SizedBox(height: 8),
-                  // 页码和按钮
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      TextButton.icon(
-                        onPressed: _prevChapter,
-                        icon: const Icon(
-                          Icons.chevron_left,
-                          color: Colors.white,
+                      // 页码滑块（拼页模式下不显示）
+                      if (_images.isNotEmpty && !_isContinuousMode)
+                        Slider(
+                          value:
+                              (_isDoublePage ? _currentSpread : _currentIndex)
+                                  .toDouble(),
+                          min: 0,
+                          max:
+                              (_isDoublePage
+                                      ? _spreadCount - 1
+                                      : _images.length - 1)
+                                  .toDouble(),
+                          onChanged: (value) {
+                            setState(() {
+                              if (_isDoublePage) {
+                                _currentIndex = _spreadLeftImage(value.toInt());
+                              } else {
+                                _currentIndex = value.toInt();
+                              }
+                            });
+                          },
+                          onChangeEnd: (value) {
+                            // 拖动/点击结束：跳转到目标页（onPageChanged 会同步 _currentIndex 与进度）
+                            if (_pageController.hasClients) {
+                              _pageController.jumpToPage(value.toInt());
+                            }
+                          },
                         ),
-                        label: const Text(
-                          '上一话',
-                          style: TextStyle(color: Colors.white),
-                        ),
+                      const SizedBox(height: 8),
+                      // 页码和按钮（纯图标）
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          TextButton(
+                            onPressed: _prevChapter,
+                            child: const Icon(
+                              Icons.chevron_left,
+                              color: Colors.white,
+                            ),
+                          ),
+                          _buildPageIndicator(),
+                          TextButton(
+                            onPressed: _nextChapter,
+                            child: const Icon(
+                              Icons.chevron_right,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
                       ),
-                      _buildPageIndicator(),
-                      TextButton.icon(
-                        onPressed: _nextChapter,
-                        icon: const Icon(
-                          Icons.chevron_right,
-                          color: Colors.white,
-                        ),
-                        label: const Text(
-                          '下一话',
-                          style: TextStyle(color: Colors.white),
-                        ),
+                      // 设置 + 目录按钮（纯图标，右对齐，同图书阅读器）
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          // 左侧占位，宽度≈右侧两按钮，使番茄按钮居中
+                          const SizedBox(width: 96),
+                          const PomodoroButton(),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextButton(
+                                onPressed: _showReaderSettingsSheet,
+                                child: const Icon(
+                                  Icons.settings_rounded,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: _showToc,
+                                child: const Icon(
+                                  Icons.menu_book_rounded,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                  // 目录按钮（右对齐，同图书阅读器）
-                  Row(
-                    children: [
-                      const Expanded(child: SizedBox()),
-                      TextButton.icon(
-                        onPressed: _showToc,
-                        icon: const Icon(
-                          Icons.menu_book_rounded,
-                          color: Colors.white,
-                        ),
-                        label: const Text(
-                          '目录',
-                          style: TextStyle(color: Colors.white),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+                ),
               ),
             ),
           ],
@@ -1051,4 +1815,40 @@ class _ReaderPageState extends State<ReaderPage> {
       ),
     );
   }
+}
+
+class _ClockText extends StatefulWidget {
+  final TextStyle style;
+  const _ClockText({required this.style});
+
+  @override
+  State<_ClockText> createState() => _ClockTextState();
+}
+
+class _ClockTextState extends State<_ClockText> {
+  Timer? _timer;
+  String _time = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _update();
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) => _update());
+  }
+
+  void _update() {
+    final now = DateTime.now();
+    final t =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    if (t != _time) setState(() => _time = t);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Text(_time, style: widget.style);
 }

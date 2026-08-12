@@ -13,6 +13,7 @@ import '../services/platform_service.dart';
 import '../services/reading_progress_service.dart';
 import '../services/settings_service.dart';
 import '../services/zlibrary_service.dart';
+import '../source/source_manager.dart';
 import '../utils/list_pagination.dart';
 import '../theme/jelly_theme.dart';
 import '../widgets/jelly_search_bar.dart';
@@ -84,13 +85,23 @@ class _DownloadPageState extends State<DownloadPage>
   bool _showChapterBackToTop = false; // 章节弹窗是否显示返回顶部
 
   ScrollController get _activeScrollController =>
-      _tabController.index == 0 ? _scrollController : _bookScrollController;
+      _isComicTab ? _scrollController : _bookScrollController;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    final tabs = SettingsService().effectiveContentTabs();
+    final initialIdx = min(
+      SettingsService().defaultContentTabIndex(),
+      tabs.length - 1,
+    );
+    _tabController = TabController(
+      length: tabs.length,
+      vsync: this,
+      initialIndex: initialIdx,
+    );
     _tabController.addListener(_onTabChanged);
+    SettingsService().addListener(_onContentTabsChanged);
     DownloadService().addListener(_onChanged);
     BookDownloadService().addListener(_onChanged);
     ReadingProgressService().addListener(_onChanged);
@@ -129,8 +140,34 @@ class _DownloadPageState extends State<DownloadPage>
     if (mounted) setState(() {});
   }
 
+  /// 显示设置变化（跟随导航栏/默认显示/导航栏可见 tab）时，按需重建 TabController
+  void _onContentTabsChanged() {
+    if (!mounted) return;
+    final newLen = SettingsService().effectiveContentTabs().length;
+    if (newLen != _tabController.length) {
+      final oldIndex = _tabController.index;
+      _tabController.removeListener(_onTabChanged);
+      _tabController.dispose();
+      _tabController = TabController(
+        length: newLen,
+        vsync: this,
+        initialIndex: min(oldIndex, newLen - 1),
+      );
+      _tabController.addListener(_onTabChanged);
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// 当前 tab 是否为漫画（动态 tab 顺序下不依赖固定 index）
+  bool get _isComicTab {
+    final tabs = SettingsService().effectiveContentTabs();
+    final idx = _tabController.index.clamp(0, tabs.length - 1);
+    return tabs[idx] == NavTab.manga;
+  }
+
   @override
   void dispose() {
+    SettingsService().removeListener(_onContentTabsChanged);
     DownloadService().removeListener(_onChanged);
     BookDownloadService().removeListener(_onChanged);
     ReadingProgressService().removeListener(_onChanged);
@@ -176,7 +213,7 @@ class _DownloadPageState extends State<DownloadPage>
   }
 
   void _selectAll() {
-    final isComic = _tabController.index == 0;
+    final isComic = _isComicTab;
     setState(() {
       _selectedIds
         ..clear()
@@ -192,7 +229,7 @@ class _DownloadPageState extends State<DownloadPage>
 
   Future<void> _removeSelected() async {
     if (_selectedIds.isEmpty) return;
-    final isComic = _tabController.index == 0;
+    final isComic = _isComicTab;
     final count = _selectedIds.length;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -268,7 +305,7 @@ class _DownloadPageState extends State<DownloadPage>
   void _onScroll() {
     final c = _activeScrollController;
     if (!c.hasClients) return;
-    final isComic = _tabController.index == 0;
+    final isComic = _isComicTab;
     final total = isComic ? _comicTotal : _bookTotal;
     final display = isComic ? _comicDisplayCount : _bookDisplayCount;
     if (ListPagination.shouldLoadMore(c) && display < total) {
@@ -351,14 +388,15 @@ class _DownloadPageState extends State<DownloadPage>
       final completedCount = tasks
           .where((t) => t.status == DownloadStatus.completed)
           .length;
-      // 按章节顺序排序（标题章节号优先，回退 chapterOrder），便于阅读顺序展示
+      // 按源站原始 order 排序，方向由源决定，统一「第1话在前」
+      final desc = tasks.isNotEmpty
+          ? (SourceManager()
+                    .getSource(tasks.first.sourceId ?? '')
+                    ?.chapterOrderDescending ??
+                false)
+          : false;
       final sorted = List<DownloadTask>.from(tasks)
-        ..sort(
-          (a, b) => chapterDisplaySortKey(
-            a.chapterTitle,
-            a.chapterOrder,
-          ).compareTo(chapterDisplaySortKey(b.chapterTitle, b.chapterOrder)),
-        );
+        ..sort((a, b) => chapterCompare(a.chapterOrder, b.chapterOrder, desc));
       final hasActive = tasks.any((t) => t.status != DownloadStatus.completed);
       int? latestAt;
       for (final t in tasks) {
@@ -377,9 +415,17 @@ class _DownloadPageState extends State<DownloadPage>
         latestAt: latestAt,
       );
     }).toList();
-    // 稳定排序：按 pathWord 字母序。不按状态/时间重排，避免章节完成时子项位移
-    // 触发 SliverMasonryGrid 0.7.0 的 RangeError（同图书网格）。
-    groups.sort((a, b) => a.pathWord.compareTo(b.pathWord));
+    // 按下载时间倒序：进行中的组置顶，已完成的按最近完成时间倒序，无时间按 pathWord 兜底。
+    // ValueKey 用排序后的顺序签名，顺序变化时重建 sliver 清除陈旧布局状态，规避 masonry 越界。
+    groups.sort((a, b) {
+      final aRank = a.hasActive ? 0 : 1;
+      final bRank = b.hasActive ? 0 : 1;
+      if (aRank != bRank) return aRank - bRank;
+      final aT = a.latestAt ?? 0;
+      final bT = b.latestAt ?? 0;
+      if (aT != bT) return bT - aT;
+      return a.pathWord.compareTo(b.pathWord);
+    });
     // 搜索过滤（按漫画标题，忽略大小写）
     final q = _searchQuery.toLowerCase();
     if (q.isNotEmpty) {
@@ -436,10 +482,14 @@ class _DownloadPageState extends State<DownloadPage>
               Expanded(
                 child: TabBarView(
                   controller: _tabController,
-                  children: [
-                    _buildComicBody(isDark, groups),
-                    _buildBookBody(isDark),
-                  ],
+                  children: SettingsService()
+                      .effectiveContentTabs()
+                      .map(
+                        (t) => t == NavTab.manga
+                            ? _buildComicBody(isDark, groups)
+                            : _buildBookBody(isDark),
+                      )
+                      .toList(),
                 ),
               ),
             ],
@@ -556,11 +606,10 @@ class _DownloadPageState extends State<DownloadPage>
                 target: 360,
                 max: 6,
               );
-              // 按 pathWord 集合 keyed：仅在漫画增删时重建 sliver，规避 masonry 越界。
+              // 按排序后 pathWord 顺序 keyed：顺序变化(任务完成/状态变)时重建 sliver，
+              // 清除陈旧布局状态规避 masonry 越界；仅进度变(顺序不变)不重建，动画不跳。
               return SliverMasonryGrid.count(
-                key: ValueKey(
-                  (groups.map((g) => g.pathWord).toList()..sort()).join('|'),
-                ),
+                key: ValueKey(groups.map((g) => g.pathWord).join('|')),
                 crossAxisCount: cols,
                 mainAxisSpacing: 0,
                 crossAxisSpacing: 0,
@@ -590,19 +639,36 @@ class _DownloadPageState extends State<DownloadPage>
   Widget _buildBookBody(bool isDark) {
     final svc = BookDownloadService();
     final q = _searchQuery.toLowerCase();
-    // 稳定排序：按加入顺序倒序（最新在前）。不按状态重排--任务完成时子项不位移，
-    // 避免触发 SliverMasonryGrid 0.7.0 的 RangeError（包已知缺陷：子项重排/增删时
-    // 渲染对象残留旧布局父数据导致越界）。
-    final tasks = svc.tasks.values
-        .where((t) {
-          if (t.isLocalImport) return false; // 导入的书不进下载记录
-          if (q.isEmpty) return true;
-          return t.title.toLowerCase().contains(q) ||
-              (t.author?.toLowerCase().contains(q) ?? false);
-        })
-        .toList()
-        .reversed
-        .toList();
+    final tasks = svc.tasks.values.where((t) {
+      if (t.isLocalImport) return false; // 导入的书不进下载记录
+      if (q.isEmpty) return true;
+      return t.title.toLowerCase().contains(q) ||
+          (t.author?.toLowerCase().contains(q) ?? false);
+    }).toList();
+    // 按下载时间倒序：进行中/排队置顶，已完成按 downloadedAt 倒序，失败/暂停排后。
+    // ValueKey 用排序后的顺序签名，顺序变化时重建 sliver 清除陈旧布局，规避 masonry 越界。
+    int rank(BookDownloadStatus s) {
+      switch (s) {
+        case BookDownloadStatus.queued:
+        case BookDownloadStatus.downloading:
+          return 0;
+        case BookDownloadStatus.completed:
+          return 1;
+        case BookDownloadStatus.failed:
+        case BookDownloadStatus.paused:
+          return 2;
+      }
+    }
+
+    tasks.sort((a, b) {
+      final aRank = rank(a.status);
+      final bRank = rank(b.status);
+      if (aRank != bRank) return aRank - bRank;
+      final aT = a.downloadedAt ?? 0;
+      final bT = b.downloadedAt ?? 0;
+      if (aT != bT) return bT - aT;
+      return a.bookId.compareTo(b.bookId);
+    });
     _bookTotal = tasks.length;
     final visibleTasks = tasks.take(_bookDisplayCount).toList();
 
@@ -665,12 +731,10 @@ class _DownloadPageState extends State<DownloadPage>
                 target: 360,
                 max: 6,
               );
-              // 按 bookId 集合 keyed：仅在增删任务时重建 sliver（清除陈旧布局状态，
-              // 规避 masonry 越界）；状态/进度变化集合不变，不重建，入场动画不反复跳动。
+              // 按排序后 bookId 顺序 keyed：顺序变化(任务完成/状态变)时重建 sliver，
+              // 清除陈旧布局状态规避 masonry 越界；仅进度变(顺序不变)不重建，动画不跳。
               return SliverMasonryGrid.count(
-                key: ValueKey(
-                  (tasks.map((t) => t.bookId).toList()..sort()).join('|'),
-                ),
+                key: ValueKey(tasks.map((t) => t.bookId).join('|')),
                 crossAxisCount: cols,
                 mainAxisSpacing: 0,
                 crossAxisSpacing: 0,
@@ -732,7 +796,7 @@ class _DownloadPageState extends State<DownloadPage>
                   width: MediaQuery.of(context).size.width * 0.42,
                   child: JellySearchBar(
                     controller: _searchController,
-                    hintText: _tabController.index == 0 ? '搜索漫画' : '搜索图书',
+                    hintText: _isComicTab ? '搜索漫画' : '搜索图书',
                     onChanged: (v) => setState(() {
                       _searchQuery = v;
                       _comicDisplayCount = ListPagination.pageSize;
@@ -748,14 +812,23 @@ class _DownloadPageState extends State<DownloadPage>
                 const SizedBox(width: 8),
                 AnimatedBuilder(
                   animation: _tabController.animation!,
-                  builder: (context, _) => JellySegmentedToggle(
-                    index: _tabController.animation!.value,
-                    onChanged: (i) => _tabController.animateTo(i),
-                    segments: const [
-                      JellySegmentData(icon: Icons.palette_rounded),
-                      JellySegmentData(icon: Icons.book_rounded),
-                    ],
-                  ),
+                  builder: (context, _) {
+                    final tabs = SettingsService().effectiveContentTabs();
+                    if (tabs.length < 2) return const SizedBox.shrink();
+                    return JellySegmentedToggle(
+                      index: _tabController.animation!.value,
+                      onChanged: (i) => _tabController.animateTo(i),
+                      segments: tabs
+                          .map(
+                            (t) => JellySegmentData(
+                              icon: t == NavTab.manga
+                                  ? Icons.palette_rounded
+                                  : Icons.book_rounded,
+                            ),
+                          )
+                          .toList(),
+                    );
+                  },
                 ),
                 const Spacer(),
               ],
@@ -1140,6 +1213,13 @@ class _DownloadPageState extends State<DownloadPage>
         ),
       );
     }
+    if (t.status == BookDownloadStatus.failed) {
+      return GestureDetector(
+        onTap: () => _showFailureDetail(t.title, t.error),
+        onLongPress: onSelect,
+        child: card,
+      );
+    }
     return GestureDetector(onLongPress: onSelect, child: card);
   }
 
@@ -1290,6 +1370,10 @@ class _DownloadPageState extends State<DownloadPage>
     final hasProgress = progress != null;
     final activeCount = g.tasks.length - g.completedCount;
     final titleColor = isDark ? Colors.white : JellyTheme.textPrimaryLight;
+    // 漫画源角标名（取首条下载任务的源；源已移除或旧记录则不显示）
+    final sourceName = g.tasks.isEmpty
+        ? null
+        : SourceManager().getSource(g.tasks.first.sourceId ?? '')?.name;
 
     final card = Container(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -1388,8 +1472,28 @@ class _DownloadPageState extends State<DownloadPage>
             Padding(
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
                 children: [
+                  // 左下角：漫画源徽标（与右侧阅读按钮并排）
+                  if (sourceName != null)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: JellyTheme.primary.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        sourceName,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: JellyTheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  const Spacer(),
                   FilledButton.icon(
                     onPressed: g.completedCount == 0
                         ? null
@@ -1600,6 +1704,31 @@ class _DownloadPageState extends State<DownloadPage>
     );
   }
 
+  /// 弹出完整失败信息（长文本可滚动、可选中复制）
+  void _showFailureDetail(String title, String? error) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('下载失败：$title'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              error != null && error.isNotEmpty ? error : '未知错误',
+              style: const TextStyle(fontSize: 13, height: 1.5),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 单章行：状态点 + 标题/状态 + 按状态条件显示的操作按钮
   Widget _buildChapterRow(DownloadTask t, bool isDark) {
     final svc = DownloadService();
@@ -1622,73 +1751,78 @@ class _DownloadPageState extends State<DownloadPage>
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        t.chapterTitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          color: titleColor,
-                        ),
-                      ),
-                    ),
-                    if (isCurrent) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: JellyTheme.blue.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(5),
-                        ),
-                        child: const Text(
-                          '正在阅读',
+            child: GestureDetector(
+              onTap: t.status == DownloadStatus.failed
+                  ? () => _showFailureDetail(t.chapterTitle, t.error)
+                  : null,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          t.chapterTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            fontSize: 10,
-                            height: 1.2,
-                            color: JellyTheme.blue,
-                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                            color: titleColor,
                           ),
                         ),
                       ),
-                    ] else if (seen &&
-                        t.status == DownloadStatus.completed) ...[
-                      const SizedBox(width: 6),
-                      const Icon(
-                        Icons.check_circle,
-                        size: 13,
-                        color: JellyTheme.blue,
-                      ),
-                      if (t.missingImages > 0) ...[
-                        const SizedBox(width: 4),
-                        Text(
-                          '缺 ${t.missingImages} 张',
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: JellyTheme.error,
-                            fontWeight: FontWeight.w600,
+                      if (isCurrent) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: JellyTheme.blue.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                          child: const Text(
+                            '正在阅读',
+                            style: TextStyle(
+                              fontSize: 10,
+                              height: 1.2,
+                              color: JellyTheme.blue,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
+                      ] else if (seen &&
+                          t.status == DownloadStatus.completed) ...[
+                        const SizedBox(width: 6),
+                        const Icon(
+                          Icons.check_circle,
+                          size: 13,
+                          color: JellyTheme.blue,
+                        ),
+                        if (t.missingImages > 0) ...[
+                          const SizedBox(width: 4),
+                          Text(
+                            '缺 ${t.missingImages} 张',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: JellyTheme.error,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                       ],
                     ],
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  _statusText(t),
-                  style: TextStyle(fontSize: 11, color: _statusColor(t)),
-                ),
-              ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _statusText(t),
+                    style: TextStyle(fontSize: 11, color: _statusColor(t)),
+                  ),
+                ],
+              ),
             ),
           ),
           ..._buildChapterActions(t, svc),
@@ -1779,13 +1913,15 @@ class _DownloadPageState extends State<DownloadPage>
     String cover,
     ComicChapter start,
     List<ComicChapter> chapters,
-    int initialPage,
-  ) {
+    int initialPage, {
+    String? sourceId,
+  }) {
     final comic = Comic(
       id: pathWord,
       title: title,
       cover: cover,
       pathWord: pathWord,
+      sourceId: sourceId,
     );
     final group = ChapterGroup(
       id: 'default',
@@ -1818,6 +1954,7 @@ class _DownloadPageState extends State<DownloadPage>
       chapters[idx],
       chapters,
       0,
+      sourceId: t.sourceId,
     );
   }
 
@@ -1835,7 +1972,15 @@ class _DownloadPageState extends State<DownloadPage>
         initialPage = progress.lastPageIndex;
       }
     }
-    _openReader(g.pathWord, g.title, g.cover, start, chapters, initialPage);
+    _openReader(
+      g.pathWord,
+      g.title,
+      g.cover,
+      start,
+      chapters,
+      initialPage,
+      sourceId: g.tasks.isNotEmpty ? g.tasks.first.sourceId : null,
+    );
   }
 
   void _confirmDeleteChapter(DownloadTask t) {

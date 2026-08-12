@@ -36,7 +36,7 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
       initialIndex: _mangaModes.indexOf(s.readingMode),
     );
     _bookTabCtrl = TabController(
-      length: 2,
+      length: 3,
       vsync: this,
       initialIndex: s.bookReadingMode.index,
     );
@@ -76,6 +76,14 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
               _buildBookReadingModeCard(isDark, s),
               const SizedBox(height: 12),
               _buildPreloadCard(isDark, s),
+              const SizedBox(height: 12),
+              _buildReverseTapCard(isDark, s),
+              const SizedBox(height: 12),
+              _buildDoublePageCard(isDark, s),
+              const SizedBox(height: 12),
+              _buildShowHudCard(isDark, s),
+              const SizedBox(height: 12),
+              _buildVolumeKeyCard(isDark, s),
             ],
           );
         },
@@ -144,7 +152,7 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
     );
   }
 
-  /// 图书阅读模式卡片：翻页 / 仿真
+  /// 图书阅读模式卡片：翻页 / 仿真 / 覆盖
   Widget _buildBookReadingModeCard(bool isDark, SettingsService s) {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
@@ -170,7 +178,7 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
                 ),
                 const SizedBox(height: 4),
                 const Text(
-                  '翻页：左右平移翻页\n仿真：纸张卷曲翻页',
+                  '翻页：左右平移翻页\n仿真：纸张卷曲翻页\n覆盖：新页滑入覆盖当前页',
                   style: TextStyle(
                     fontSize: 12,
                     color: JellyTheme.textSecondary,
@@ -187,6 +195,7 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
               segments: const [
                 JellySegmentData(label: '翻页'),
                 JellySegmentData(label: '仿真'),
+                JellySegmentData(label: '覆盖'),
               ],
               segmentWidth: 56,
               onChanged: (i) {
@@ -280,6 +289,182 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
                 ),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 翻页按钮反转开关卡片（左点下一页、右点上一页）
+  Widget _buildReverseTapCard(bool isDark, SettingsService s) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      decoration: BoxDecoration(
+        color: isDark ? JellyTheme.cardDark : JellyTheme.cardLight,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '翻页按钮反转',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '开启后：点击左侧下一页、右侧上一页（与默认相反）',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: JellyTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: s.reverseTap,
+            activeColor: JellyTheme.primary,
+            onChanged: (v) => s.setReverseTap(v),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 双页模式开关卡片（横屏左右并排两页，仅翻页模式生效）
+  Widget _buildDoublePageCard(bool isDark, SettingsService s) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      decoration: BoxDecoration(
+        color: isDark ? JellyTheme.cardDark : JellyTheme.cardLight,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '双页模式',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '横屏时左右并排显示两页',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: JellyTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: s.doublePage,
+            activeColor: JellyTheme.primary,
+            onChanged: (v) => s.setDoublePage(v),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 阅读信息栏开关卡片（阅读时角落显示时间、页码、进度等）
+  Widget _buildShowHudCard(bool isDark, SettingsService s) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      decoration: BoxDecoration(
+        color: isDark ? JellyTheme.cardDark : JellyTheme.cardLight,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '显示阅读信息',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '阅读时在角落显示时间、页码、进度等',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: JellyTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: s.showReaderHud,
+            activeColor: JellyTheme.primary,
+            onChanged: (v) => s.setShowReaderHud(v),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 音量键翻页开关卡片（阅读时按音量上/下键翻页，会接管音量键）
+  Widget _buildVolumeKeyCard(bool isDark, SettingsService s) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      decoration: BoxDecoration(
+        color: isDark ? JellyTheme.cardDark : JellyTheme.cardLight,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '音量键翻页',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '阅读时按音量上/下键翻页（会接管音量键）',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: JellyTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: s.volumeKeyTurn,
+            activeColor: JellyTheme.primary,
+            onChanged: (v) => s.setVolumeKeyTurn(v),
           ),
         ],
       ),

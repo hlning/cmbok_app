@@ -4,6 +4,36 @@ import 'package:flutter/services.dart';
 class PlatformService {
   static const _channel = MethodChannel('cmbok/platform');
 
+  /// 音量键事件回调（方向：'up' / 'down'）。阅读器进入时赋值，退出时置 null。
+  static void Function(String direction)? onVolumeKey;
+  static bool _handlerInstalled = false;
+
+  /// 安装原生->Dart 回调：收到 onVolumeKey 时转发给 [onVolumeKey]。
+  static void _ensureHandler() {
+    if (_handlerInstalled) return;
+    _handlerInstalled = true;
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'onVolumeKey' && call.arguments is String) {
+        onVolumeKey?.call(call.arguments as String);
+      }
+    });
+  }
+
+  /// 开/关音量键翻页拦截（Android 原生 Activity 消费音量键）。
+  /// 非安卓/原生未实现时静默忽略。
+  static Future<void> setVolumeKeyNav(bool enabled) async {
+    _ensureHandler();
+    try {
+      await _channel.invokeMethod<bool>('setVolumeKeyNav', {
+        'enabled': enabled,
+      });
+    } on PlatformException {
+      // ignore
+    } on MissingPluginException {
+      // ignore
+    }
+  }
+
   /// 打开目录（Android 文件管理器）。成功返回 true；非安卓/无应用可处理返回 false。
   static Future<bool> openDirectory(String path) async {
     try {

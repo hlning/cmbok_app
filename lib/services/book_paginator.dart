@@ -121,6 +121,10 @@ class BookPaginator {
   /// imageKey -> 宽/高（阅读器解码图片后回填；未知按 1.5 估算）
   final Map<String, double> imageAspectRatios;
 
+  /// imageKey -> 图片自然像素宽度（与逻辑像素 1:1）。行内小图标（如"注"标记）
+  /// 宽度小于内容区时按自然尺寸分页，不被满宽放大；未知按满宽处理。
+  final Map<String, int> imageNaturalWidths;
+
   /// 章节首 block 索引集合：这些 block 强制起新页（复刻按章独立分页行为，
   /// 避免整本增量分页时章标题接在上一章末尾页）
   final Set<int> chapterStarts;
@@ -131,6 +135,7 @@ class BookPaginator {
     required this.viewportHeight,
     required this.typo,
     this.imageAspectRatios = const {},
+    this.imageNaturalWidths = const {},
     this.chapterStarts = const {},
   });
 
@@ -144,6 +149,7 @@ class BookPaginator {
     required this.viewportHeight,
     required this.typo,
     this.imageAspectRatios = const {},
+    this.imageNaturalWidths = const {},
     this.chapterStarts = const {},
     required int resumeBlockIndex,
     required List<PageEntry> cur,
@@ -226,7 +232,12 @@ class BookPaginator {
     // 图片
     if (block is ImageBlock) {
       final ar = imageAspectRatios[block.imageKey] ?? block.aspectRatio ?? 1.5;
-      var imgH = _contentWidth / ar;
+      final naturalW = imageNaturalWidths[block.imageKey];
+      // 行内标注图标（小且接近正方形）：按字号高度分页，不占满宽（与渲染一致）
+      final isInlineIcon =
+          naturalW != null && naturalW <= 256 && ar >= 0.7 && ar <= 1.4;
+      final imgW = isInlineIcon ? typo.fontSize * 0.8 : _contentWidth;
+      var imgH = isInlineIcon ? imgW : imgW / ar;
       if (imgH > _pageHeight) imgH = _pageHeight; // 超高图限制为一页高
       if (imgH > _remaining && _cur.isNotEmpty) {
         _commitPage();

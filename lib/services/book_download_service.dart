@@ -29,7 +29,7 @@ enum BookDownloadResult {
 
 class BookDownloadTask {
   final String bookId;
-  final String hash;
+  String hash;
   final String title;
   final String? author;
   final String? extension;
@@ -292,12 +292,20 @@ class BookDownloadService extends ChangeNotifier {
     return dir;
   }
 
-  /// 清理文件名非法字符并截断到 [maxLen]（默认100），避免书名过长叠加 bookId
-  /// 后超出文件系统/Windows 260 路径限制。
-  String _sanitize(String s, {int maxLen = 100}) {
-    var name = s.replaceAll(RegExp(r'[<>:"/\\|?*]'), '');
-    if (name.length > maxLen) name = name.substring(0, maxLen);
-    return name;
+  /// 清理文件名非法字符并按 UTF-8 字节截断到 [maxBytes]（默认180）。
+  /// 中文 UTF-8 每字 3 字节，Android ext4 单文件名 NAME_MAX=255 字节，
+  /// 按字符数截断(100中文字=300字节)会超限致下载失败，故按字节截断，
+  /// 并回退到多字节字符边界，避免截断半个字符产生乱码。
+  String _sanitize(String s, {int maxBytes = 180}) {
+    var name = s.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '').trim();
+    name = name.replaceAll(RegExp(r'[. ]+$'), ''); // 去尾部点/空格
+    final bytes = utf8.encode(name);
+    if (bytes.length <= maxBytes) return name;
+    int cut = maxBytes;
+    while (cut > 0 && (bytes[cut] & 0xC0) == 0x80) {
+      cut--; // 回退到多字节字符首字节
+    }
+    return utf8.decode(bytes.sublist(0, cut), allowMalformed: true);
   }
 
   /// 加入下载队列（立即返回，后台调度）。
@@ -328,6 +336,9 @@ class BookDownloadService extends ChangeNotifier {
     if (!reserved) return BookDownloadResult.limitExceeded;
 
     final task = existing ?? BookDownloadTask.fromBook(book);
+    // 同 bookId 不同来源（如分类页 dl slug vs eapi 6 位 hash）hash 可能不同，
+    // 用本次下载的 book.hash 覆盖旧 task.hash，确保下载走对的来源路径。
+    if (task.hash != book.hash) task.hash = book.hash;
     task
       ..status = BookDownloadStatus.queued
       ..progress = 0
@@ -356,7 +367,10 @@ class BookDownloadService extends ChangeNotifier {
       final now = DateTime.now().millisecondsSinceEpoch;
       final bookId = 'local_${now}_${_localSeq++}';
       final ext = extension.toLowerCase();
-      final dest = File('${dir.path}/${_sanitize(title)}_$bookId.$ext');
+      final suffix = '_$bookId.$ext';
+      final dest = File(
+        '${dir.path}/${_sanitize(title, maxBytes: 250 - suffix.length)}$suffix',
+      );
       await src.copy(dest.path);
 
       // 封面：epub/mobi 提取内嵌封面，txt/pdf 用默认封面
@@ -484,8 +498,9 @@ class BookDownloadService extends ChangeNotifier {
       final ext =
           (task.extension?.isNotEmpty == true ? task.extension! : 'epub')
               .toLowerCase();
+      final suffix = '_${task.bookId}.$ext';
       final file = File(
-        '${dir.path}/${_sanitize(task.title)}_${task.bookId}.$ext',
+        '${dir.path}/${_sanitize(task.title, maxBytes: 250 - suffix.length)}$suffix',
       );
 
       // 续传：从已下载字节数接着下（HTTP Range）
@@ -534,6 +549,10 @@ class BookDownloadService extends ChangeNotifier {
       if (!_tasks.containsKey(task.bookId)) return; // 已取消，静默
       if (task.status == BookDownloadStatus.paused) return; // 已暂停，静默
       _releaseQuota(task, z);
+      // 自登账号额度用完：拉取服务端真实值回写，使后续预约能正确拦截
+      if (e.code == 'quota_exceeded' && z.isLoggedIn) {
+        z.refreshUserProfile();
+      }
       task
         ..status = BookDownloadStatus.failed
         ..error = _downloadErrorMsg(e);

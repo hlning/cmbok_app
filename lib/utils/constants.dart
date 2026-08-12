@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 /// 应用常量配置
 class AppConstants {
   static const String appName = 'Cmbok';
-  static const String version = '2.0.0';
+  static const String version = '2.0.1';
 
   /// 拷贝漫画 API 地址
   static const String defaultCopyApiUrl = 'https://api.copy3000.com/';

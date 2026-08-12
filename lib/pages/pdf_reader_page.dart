@@ -72,7 +72,7 @@ class _PdfReaderPageState extends State<PdfReaderPage> {
     _saveProgress(page);
   }
 
-  void _saveProgress(int page0Based) {
+  void _saveProgress(int page0Based, {bool notify = true}) {
     final total = _totalPages;
     if (total <= 0 || page0Based < 0) return;
     BookReadingProgressService().recordBlock(
@@ -80,6 +80,7 @@ class _PdfReaderPageState extends State<PdfReaderPage> {
       page0Based,
       page0Based,
       total,
+      notify: notify,
     );
   }
 
@@ -100,8 +101,7 @@ class _PdfReaderPageState extends State<PdfReaderPage> {
   @override
   void dispose() {
     if (_totalPages > 0 && _currentPage >= 0) {
-      _saveProgress(_currentPage);
-      BookReadingProgressService().notifyProgressChanged();
+      _saveProgress(_currentPage, notify: false);
     }
     super.dispose();
   }

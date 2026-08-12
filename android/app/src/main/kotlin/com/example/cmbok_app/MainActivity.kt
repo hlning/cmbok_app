@@ -5,20 +5,23 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
+import android.view.KeyEvent
 import androidx.core.content.FileProvider
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.io.File
 
-class MainActivity : FlutterActivity() {
+class MainActivity : FlutterFragmentActivity() {
     private val channel = "cmbok/platform"
+    private var methodChannel: MethodChannel? = null
+    private var volumeKeyNavEnabled = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channel)
-            .setMethodCallHandler { call, result ->
+        methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channel)
+        methodChannel!!.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "openDir" -> {
                         val path = call.argument<String>("path") ?: ""
@@ -30,6 +33,10 @@ class MainActivity : FlutterActivity() {
                         result.success(openFile(path, mime))
                     }
                     "getApkPath" -> result.success(getApkPath())
+                    "setVolumeKeyNav" -> {
+                        volumeKeyNavEnabled = call.argument<Boolean>("enabled") ?: false
+                        result.success(true)
+                    }
                     "pdfOpen" -> {
                         val path = call.argument<String>("path") ?: ""
                         // 可能几百页，放线程避免卡 UI
@@ -56,6 +63,22 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    /** 音量键翻页：开启时消费音量上/下键（阻止系统调音量）并发事件给 Dart。 */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (volumeKeyNavEnabled && (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)) {
+            methodChannel?.invokeMethod("onVolumeKey", if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) "up" else "down")
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (volumeKeyNavEnabled && (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)) {
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     /** 打开目录：ACTION_VIEW + vnd.android.document/directory（FileProvider 授权） */
