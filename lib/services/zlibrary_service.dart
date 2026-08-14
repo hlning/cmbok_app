@@ -67,7 +67,7 @@ class ZlibraryService extends ChangeNotifier {
       'zlibrary_categories'; // JSON [{title,children:[{id,slug,zhName}]}]
   static const _kMaxRetries = 3; // 429/5xx 同域名退避重试次数
   static const _kRetryStatus = {429, 500, 502, 503, 504};
-  static const _kHealthInterval = Duration(minutes: 30);
+  static const _kHealthInterval = Duration(hours: 1);
 
   static const _browserUa =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -124,6 +124,11 @@ class ZlibraryService extends ChangeNotifier {
   String get username => _username;
   String get remixUserid => _remixUserid;
   bool get isLoggedIn => _remixUserid.isNotEmpty && _remixUserkey.isNotEmpty;
+
+  /// 供在线阅读 WebView 注入登录态：已登录返回 cookie（remix_userid/remix_userkey
+  /// + siteLanguageV2），未登录返回空 map（由调用方决定是否降级）。
+  Map<String, String> cookiesForWebview() =>
+      isLoggedIn ? _cookies(_remixUserid, _remixUserkey) : const {};
 
   /// 自有账号服务端每日下载限额（未取到时为 null，调用方应回退 loggedDailyLimit）
   int? get serverDownloadsLimit => _serverDownloadsLimit;
@@ -798,6 +803,7 @@ class ZlibraryService extends ChangeNotifier {
       language: language,
       extension: extension,
       filesizeString: filesizeString,
+      readOnlineUrl: rowEl.attributes['readOnlineUrl'],
     );
   }
 
@@ -1581,6 +1587,9 @@ class ZlibraryService extends ChangeNotifier {
   /// 定时健康检查（30 分钟）：先探当前域名，可用则保持；不可用才从候选重新选最优。
   /// 仅状态变化才 notify（_setUnavailable 内部守卫）。对应 cmbook _probe_candidates。
   Future<void> _healthCheck() async {
+    // 夜间（23:00~次日 07:00 本地时间）不探测，避免无谓的后台联网唤醒
+    final h = DateTime.now().hour;
+    if (h < 7 || h >= 23) return;
     if (_candidates.isEmpty) return; // 无候选列表，沿用本地，不误报
     _log('定时健康检查: domain=$_domain, candidates=$_candidates');
     // 先探当前域名：可用则保持

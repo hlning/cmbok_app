@@ -10,6 +10,7 @@ import '../services/book_content_cache_service.dart';
 import '../services/book_download_service.dart';
 import '../services/book_page_cache_service.dart';
 import '../services/book_parser.dart';
+import '../services/gbk_txt_parser.dart';
 import '../services/book_paginator.dart';
 import '../services/book_reading_progress_service.dart';
 import '../services/reader_override_service.dart';
@@ -96,7 +97,12 @@ class _BookPrefetchPageState extends State<BookPrefetchPage> {
         ratios = const {};
         naturalWidths = const {};
       } else if (ext == 'txt') {
-        content = await compute(BookParser.parseTxt, file);
+        // 后台常驻 isolate 解码（GBK 表仅初始化一次，不阻塞主线程）
+        final bytes = await file.readAsBytes();
+        final title = file.uri.pathSegments.isNotEmpty
+            ? file.uri.pathSegments.last
+            : '未命名';
+        content = await GbkTxtParser.instance.parse(bytes, title);
       } else if (ext == 'mobi' || ext == 'azw' || ext == 'azw3') {
         final r = await compute(BookParser.parseMobiWithRatios, file);
         content = r.content;

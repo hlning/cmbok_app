@@ -38,6 +38,7 @@ class ComicCard extends StatelessWidget {
                 child: CachedNetworkImage(
                   imageUrl: comic.cover,
                   fit: BoxFit.cover,
+                  memCacheWidth: 300,
                   placeholder: (context, url) => Container(
                     color: Colors.grey[200],
                     child: const Center(

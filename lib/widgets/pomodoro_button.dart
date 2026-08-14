@@ -245,7 +245,7 @@ class _PomodoroButtonState extends State<PomodoroButton>
                             _stop();
                             Navigator.of(ctx).pop();
                           },
-                          child: const Text(
+                          child: Text(
                             '停止计时',
                             style: TextStyle(color: JellyTheme.error),
                           ),
@@ -299,7 +299,7 @@ class _PomodoroButtonState extends State<PomodoroButton>
             child: Text(
               '${value.round()}$suffix',
               textAlign: TextAlign.end,
-              style: const TextStyle(
+              style: TextStyle(
                 color: JellyTheme.primary,
                 fontWeight: FontWeight.bold,
               ),

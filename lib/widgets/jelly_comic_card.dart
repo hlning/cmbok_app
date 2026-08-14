@@ -149,9 +149,10 @@ class _JellyComicCardState extends State<JellyComicCard>
                         imageUrl: widget.comic.cover,
                         httpHeaders: coverHeaders(widget.comic.sourceId),
                         fit: BoxFit.cover,
+                        memCacheWidth: 300,
                         placeholder: (context, url) => Container(
                           color: isDark ? Colors.grey[800] : Colors.grey[200],
-                          child: const Center(
+                          child: Center(
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
                               color: JellyTheme.primary,
@@ -259,7 +260,7 @@ class _JellyComicCardState extends State<JellyComicCard>
                                 ),
                                 child: Text(
                                   widget.comic.author!,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 10,
                                     color: JellyTheme.primary,
                                     fontWeight: FontWeight.w500,

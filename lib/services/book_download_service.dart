@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/book.dart';
 import '../models/bookshelf.dart';
 import '../utils/constants.dart';
+import '../utils/app_toast.dart';
 import '../utils/cover_generator.dart';
 import 'book_parser.dart';
 import 'bookshelf_service.dart';
@@ -527,6 +528,7 @@ class BookDownloadService extends ChangeNotifier {
         ..downloadedAt = DateTime.now().millisecondsSinceEpoch;
       _schedulePersist();
       notifyListeners();
+      AppToast.show('「${task.title}」', '下载成功');
       _log('下载完成: ${task.title}');
       // 自动加入"已下载的书"书架（幂等）
       final snapshot = Book(
@@ -558,6 +560,7 @@ class BookDownloadService extends ChangeNotifier {
         ..error = _downloadErrorMsg(e);
       _schedulePersist();
       notifyListeners();
+      AppToast.show('「${task.title}」', '下载失败', isError: true);
       _log('下载失败: ${task.title} - ${e.code}');
     } on DioException catch (e) {
       if (!_tasks.containsKey(task.bookId)) return; // 已取消，静默
@@ -568,6 +571,7 @@ class BookDownloadService extends ChangeNotifier {
         ..error = _dioErrorMsg(e);
       _schedulePersist();
       notifyListeners();
+      AppToast.show('「${task.title}」', '下载失败', isError: true);
       _log('下载失败: ${task.title} - ${_dioErrorBrief(e)}');
     } catch (e) {
       if (!_tasks.containsKey(task.bookId)) return; // 已取消，静默
@@ -578,6 +582,7 @@ class BookDownloadService extends ChangeNotifier {
         ..error = '$e';
       _schedulePersist();
       notifyListeners();
+      AppToast.show('「${task.title}」', '下载失败', isError: true);
       _log('下载失败: ${task.title} - $e');
     }
   }

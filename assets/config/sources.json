@@ -123,48 +123,82 @@
         "search_result_dom": ".aspect-w-3.aspect-h-4",
         "search_manga_url_dom": "a",
         "search_cover_dom": "img",
-        "categories": [
-          {"value": "mohuan", "name": "魔幻"},
-          {"value": "mofa", "name": "魔法"},
-          {"value": "rexue", "name": "熱血"},
-          {"value": "maoxian", "name": "冒險"},
-          {"value": "xuanyi", "name": "懸疑"},
-          {"value": "zhentan", "name": "偵探"},
-          {"value": "aiqing", "name": "愛情"},
-          {"value": "xiaoyuan", "name": "校園"},
-          {"value": "gaoxiao", "name": "搞笑"},
-          {"value": "sige", "name": "四格"},
-          {"value": "kehuan", "name": "科幻"},
-          {"value": "shengui", "name": "神鬼"},
-          {"value": "wudao", "name": "舞蹈"},
-          {"value": "yinyue", "name": "音樂"},
-          {"value": "baihe", "name": "百合"},
-          {"value": "hougong", "name": "後宮"},
-          {"value": "jizhan", "name": "機戰"},
-          {"value": "gedou", "name": "格鬥"},
-          {"value": "kongbu", "name": "恐怖"},
-          {"value": "mengxi", "name": "萌系"},
-          {"value": "wuxia", "name": "武俠"},
-          {"value": "shehui", "name": "社會"},
-          {"value": "lishi", "name": "歷史"},
-          {"value": "danmei", "name": "耽美"},
-          {"value": "lizhi", "name": "勵志"},
-          {"value": "zhichang", "name": "職場"},
-          {"value": "shenghuo", "name": "生活"},
-          {"value": "zhiyu", "name": "治癒"},
-          {"value": "weiniang", "name": "偽娘"},
-          {"value": "heidao", "name": "黑道"},
-          {"value": "zhanzheng", "name": "戰爭"},
-          {"value": "jingji", "name": "競技"},
-          {"value": "tiyu", "name": "體育"},
-          {"value": "meishi", "name": "美食"},
-          {"value": "funv", "name": "腐女"},
-          {"value": "zhainan", "name": "宅男"},
-          {"value": "tuili", "name": "推理"},
-          {"value": "zazhi", "name": "雜誌"}
-        ],
-        "category_url": "/cn/comics?filter%5Btag%5D={slug}",
-        "category_page_url": "/cn/comics?filter%5Btag%5D={slug}&page={page}",
+        "categories": {
+          "theme": {
+            "title": "题材",
+            "options": [
+              {"value": "", "name": "所有"},
+              {"value": "mohuan", "name": "魔幻"},
+              {"value": "mofa", "name": "魔法"},
+              {"value": "rexue", "name": "熱血"},
+              {"value": "maoxian", "name": "冒險"},
+              {"value": "xuanyi", "name": "懸疑"},
+              {"value": "zhentan", "name": "偵探"},
+              {"value": "aiqing", "name": "愛情"},
+              {"value": "xiaoyuan", "name": "校園"},
+              {"value": "gaoxiao", "name": "搞笑"},
+              {"value": "sige", "name": "四格"},
+              {"value": "kehuan", "name": "科幻"},
+              {"value": "shengui", "name": "神鬼"},
+              {"value": "wudao", "name": "舞蹈"},
+              {"value": "yinyue", "name": "音樂"},
+              {"value": "baihe", "name": "百合"},
+              {"value": "hougong", "name": "後宮"},
+              {"value": "jizhan", "name": "機戰"},
+              {"value": "gedou", "name": "格鬥"},
+              {"value": "kongbu", "name": "恐怖"},
+              {"value": "mengxi", "name": "萌系"},
+              {"value": "wuxia", "name": "武俠"},
+              {"value": "shehui", "name": "社會"},
+              {"value": "lishi", "name": "歷史"},
+              {"value": "danmei", "name": "耽美"},
+              {"value": "lizhi", "name": "勵志"},
+              {"value": "zhichang", "name": "職場"},
+              {"value": "shenghuo", "name": "生活"},
+              {"value": "zhiyu", "name": "治癒"},
+              {"value": "weiniang", "name": "偽娘"},
+              {"value": "heidao", "name": "黑道"},
+              {"value": "zhanzheng", "name": "戰爭"},
+              {"value": "jingji", "name": "競技"},
+              {"value": "tiyu", "name": "體育"},
+              {"value": "meishi", "name": "美食"},
+              {"value": "funv", "name": "腐女"},
+              {"value": "zhainan", "name": "宅男"},
+              {"value": "tuili", "name": "推理"},
+              {"value": "zazhi", "name": "雜誌"}
+            ]
+          },
+          "region": {
+            "title": "作品地区",
+            "options": [
+              {"value": "", "name": "全部"},
+              {"value": "japan", "name": "日本"},
+              {"value": "hongkong", "name": "港台"},
+              {"value": "europe", "name": "欧美"},
+              {"value": "china", "name": "内地"},
+              {"value": "korea", "name": "韩国"},
+              {"value": "other", "name": "其他"}
+            ]
+          },
+          "status": {
+            "title": "进度",
+            "options": [
+              {"value": "", "name": "全部"},
+              {"value": "0", "name": "连载中"},
+              {"value": "1", "name": "已完结"}
+            ]
+          },
+          "sort": {
+            "title": "排序",
+            "options": [
+              {"value": "", "name": "最新上架"},
+              {"value": "-update", "name": "最近更新"},
+              {"value": "-views", "name": "最高人气"}
+            ]
+          }
+        },
+        "category_url": "/cn/comics?filter%5Btag%5D={theme}&filter%5Bend%5D={status}&filter%5Bcountry%5D={region}&sort={sort}",
+        "category_page_url": "/cn/comics?filter%5Btag%5D={theme}&filter%5Bend%5D={status}&filter%5Bcountry%5D={region}&sort={sort}&page={page}",
         "category_list_dom": ".aspect-w-3.aspect-h-4",
         "category_cover_dom": "img",
         "category_url_dom": "a",
@@ -278,35 +312,73 @@
         "search_result_dom": ".comics-card",
         "search_manga_url_dom": "a",
         "search_cover_dom": "amp-img",
-        "categories": [
-          {"value": "lianai", "name": "恋爱"},
-          {"value": "chunai", "name": "纯爱"},
-          {"value": "gufeng", "name": "古风"},
-          {"value": "yineng", "name": "异能"},
-          {"value": "xuanyi", "name": "悬疑"},
-          {"value": "juqing", "name": "剧情"},
-          {"value": "kehuan", "name": "科幻"},
-          {"value": "qihuan", "name": "奇幻"},
-          {"value": "xuanhuan", "name": "玄幻"},
-          {"value": "chuanyue", "name": "穿越"},
-          {"value": "mouxian", "name": "冒险"},
-          {"value": "tuili", "name": "推理"},
-          {"value": "wuxia", "name": "武侠"},
-          {"value": "gedou", "name": "格斗"},
-          {"value": "zhanzheng", "name": "战争"},
-          {"value": "rexie", "name": "热血"},
-          {"value": "gaoxiao", "name": "搞笑"},
-          {"value": "danuzhu", "name": "大女主"},
-          {"value": "dushi", "name": "都市"},
-          {"value": "zongcai", "name": "总裁"},
-          {"value": "hougong", "name": "后宫"},
-          {"value": "richang", "name": "日常"},
-          {"value": "hanman", "name": "韩漫"},
-          {"value": "shaonian", "name": "少年"},
-          {"value": "qita", "name": "其它"}
-        ],
-        "category_url": "/classify?type={slug}&region=all&state=all&filter=%2a",
-        "category_page_url": "/classify?type={slug}&region=all&state=all&filter=%2a&page={page}",
+        "categories": {
+          "theme": {
+            "title": "题材",
+            "options": [
+              {"value": "all", "name": "全部"},
+              {"value": "lianai", "name": "恋爱"},
+              {"value": "chunai", "name": "纯爱"},
+              {"value": "gufeng", "name": "古风"},
+              {"value": "yineng", "name": "异能"},
+              {"value": "xuanyi", "name": "悬疑"},
+              {"value": "juqing", "name": "剧情"},
+              {"value": "kehuan", "name": "科幻"},
+              {"value": "qihuan", "name": "奇幻"},
+              {"value": "xuanhuan", "name": "玄幻"},
+              {"value": "chuanyue", "name": "穿越"},
+              {"value": "mouxian", "name": "冒险"},
+              {"value": "tuili", "name": "推理"},
+              {"value": "wuxia", "name": "武侠"},
+              {"value": "gedou", "name": "格斗"},
+              {"value": "zhanzheng", "name": "战争"},
+              {"value": "rexie", "name": "热血"},
+              {"value": "gaoxiao", "name": "搞笑"},
+              {"value": "danuzhu", "name": "大女主"},
+              {"value": "dushi", "name": "都市"},
+              {"value": "zongcai", "name": "总裁"},
+              {"value": "hougong", "name": "后宫"},
+              {"value": "richang", "name": "日常"},
+              {"value": "hanman", "name": "韩漫"},
+              {"value": "shaonian", "name": "少年"},
+              {"value": "qita", "name": "其它"}
+            ]
+          },
+          "status": {
+            "title": "进度",
+            "options": [
+              {"value": "all", "name": "全部"},
+              {"value": "serial", "name": "连载中"},
+              {"value": "pub", "name": "已完结"}
+            ]
+          },
+          "region": {
+            "title": "作品地区",
+            "options": [
+              {"value": "all", "name": "全部"},
+              {"value": "cn", "name": "国漫"},
+              {"value": "jp", "name": "日本"},
+              {"value": "kr", "name": "韩国"},
+              {"value": "en", "name": "欧美"}
+            ]
+          },
+          "english": {
+            "title": "字母",
+            "options": [
+              {"value": "%2a", "name": "全部"},
+              {"value": "ABCD", "name": "ABCD"},
+              {"value": "EFGH", "name": "EFGH"},
+              {"value": "IJKL", "name": "IJKL"},
+              {"value": "MNOP", "name": "MNOP"},
+              {"value": "QRST", "name": "QRST"},
+              {"value": "UVW", "name": "UVW"},
+              {"value": "XYZ", "name": "XYZ"},
+              {"value": "0-9", "name": "0-9"}
+            ]
+          }
+        },
+        "category_url": "/classify?type={theme}&region={region}&state={status}&filter={english}",
+        "category_page_url": "/classify?type={theme}&region={region}&state={status}&filter={english}&page={page}",
         "category_list_dom": ".comics-card",
         "category_cover_dom": "amp-img",
         "category_url_dom": "a",
@@ -348,8 +420,7 @@
           {"value": "16", "name": "偽娘"},
           {"value": "17", "name": "懸疑"},
           {"value": "20", "name": "後宮"},
-          {"value": "31", "name": "職場"},
-          {"value": "33", "name": "高清單行本"}
+          {"value": "31", "name": "職場"}
         ],
         "category_url": "/cate-{slug}.htm",
         "category_page_url": "/cate-{slug}.htm?page={page}",
@@ -376,24 +447,246 @@
         "img_load_mode": 1,
         "chapter_order": 0,
         "cross_origin": 1,
-        "categories": [
-          {"value": "31", "name": "熱血"},
-          {"value": "26", "name": "戀愛"},
-          {"value": "1", "name": "校園"},
-          {"value": "2", "name": "冒險"},
-          {"value": "25", "name": "科幻"},
-          {"value": "11", "name": "生活"},
-          {"value": "17", "name": "懸疑"},
-          {"value": "15", "name": "魔法"},
-          {"value": "34", "name": "運動"}
-        ],
-        "category_url": "/manga-list-{slug}-0-10/",
-        "category_page_url": "/manga-list-{slug}-0-10-p{page}/",
+        "categories": {
+          "theme": {
+            "title": "题材",
+            "options": [
+              {"value": "0", "name": "全部"},
+              {"value": "31", "name": "熱血"},
+              {"value": "26", "name": "戀愛"},
+              {"value": "1", "name": "校園"},
+              {"value": "2", "name": "冒險"},
+              {"value": "25", "name": "科幻"},
+              {"value": "11", "name": "生活"},
+              {"value": "17", "name": "懸疑"},
+              {"value": "15", "name": "魔法"},
+              {"value": "34", "name": "運動"}
+            ]
+          },
+          "status": {
+            "title": "进度",
+            "options": [
+              {"value": "0", "name": "全部"},
+              {"value": "1", "name": "连载中"},
+              {"value": "2", "name": "已完结"}
+            ]
+          },
+          "sort": {
+            "title": "排序",
+            "options": [
+              {"value": "2", "name": "按时间"},
+              {"value": "10", "name": "按热度"}
+            ]
+          }
+        },
+        "category_url": "/manga-list-{theme}-{status}-{sort}/",
+        "category_page_url": "/manga-list-{theme}-{status}-{sort}-p{page}/",
         "category_list_dom": ".mh-item",
         "category_cover_dom": ".mh-cover",
         "category_title_dom": ".title a",
         "category_url_dom": "a",
         "category_page_size": 12
+      }
+    },
+    {
+      "type": "config",
+      "needsMagic": true,
+      "config": {
+        "name": "大鸟禁漫",
+        "icon": "https://daniao9.com//imgs/logo_white.png",
+        "url": "https://daniao9.com/",
+        "comic_name_dom": ".pannel_head.clearfix .class",
+        "chapter_name_dom": ".content_playlist.list_scroll.clearfix a",
+        "chapter_link_dom": ".content_playlist.list_scroll.clearfix a",
+        "img_dom": ".img-wrap img",
+        "chapter_order": 1,
+        "use_frame": 1,
+        "img_attr": "data-r-src",
+        "img_load_mode": 2,
+        "use_webview_fetch": true,
+        "categories": {
+          "theme": {
+            "title": "题材",
+            "options": [
+              {"value": "all", "name": "全部"},
+              {"value": "韩漫", "name": "韩漫"},
+              {"value": "日漫", "name": "日漫"},
+              {"value": "3D漫画", "name": "3D漫画"},
+              {"value": "真人", "name": "真人"},
+              {"value": "短篇", "name": "短篇"}
+            ]
+          },
+          "status": {
+            "title": "进度",
+            "options": [
+              {"value": "all", "name": "全部"},
+              {"value": "serialized", "name": "连载中"},
+              {"value": "completed", "name": "已完结"}
+            ]
+          },
+          "sort": {
+            "title": "排序",
+            "options": [
+              {"value": "time", "name": "按时间"},
+              {"value": "hits", "name": "按热度"}
+            ]
+          }
+        },
+        "category_url": "/manga-cata/{theme}/ob/{sort}/st/{status}",
+        "category_page_url": "/manga-cata/{theme}/ob/{sort}/st/{status}/page/{page}",
+        "category_list_dom": ".vodlist.vodlist_wi .vodlist_item",
+        "category_cover_dom": ".vodlist_thumb",
+        "category_title_dom": "center a",
+        "category_url_dom": "center a",
+        "category_page_size": 24
+      }
+    },
+    {
+      "type": "config",
+      "needsMagic": true,
+      "config": {
+        "name": "鸟鸟韩漫",
+        "icon": "https://nnhm7.org/images/logo.png",
+        "url": "https://nnhm7.org/",
+        "comic_name_dom": ".sub_r h1 font",
+        "chapter_name_dom": ".Drama.autoHeight a",
+        "chapter_link_dom": ".Drama.autoHeight a",
+        "img_dom": ".img-wrap img",
+        "chapter_order": 0,
+        "use_frame": 1,
+        "img_attr": "data-src",
+        "img_load_mode": 2,
+        "use_webview_fetch": true,
+        "search_url": "/catalog.php?key={q}",
+        "search_result_dom": ".imgBox .col_3_1 li",
+        "search_manga_url_dom": ".ImgA",
+        "search_cover_dom": ".ImgA img",
+        "categories": {
+          "theme": {
+            "title": "题材",
+            "options": [
+              {"value": "all", "name": "全部"},
+              {"value": "正妹", "name": "正妹"},
+              {"value": "恋爱", "name": "恋爱"},
+              {"value": "出版漫画", "name": "出版漫画"},
+              {"value": "浪漫", "name": "浪漫"},
+              {"value": "女大生", "name": "女大生"},
+              {"value": "同居", "name": "同居"},
+              {"value": "好友", "name": "好友"},
+              {"value": "調教", "name": "調教"},
+              {"value": "动作", "name": "动作"},
+              {"value": "耽美", "name": "耽美"},
+              {"value": "校園", "name": "校園"}
+            ]
+          },
+          "status": {
+            "title": "进度",
+            "options": [
+              {"value": "all", "name": "全部"},
+              {"value": "serialized", "name": "连载中"},
+              {"value": "completed", "name": "已完结"}
+            ]
+          },
+          "sort": {
+            "title": "排序",
+            "options": [
+              {"value": "time", "name": "按时间"},
+              {"value": "hits", "name": "按热度"}
+            ]
+          }
+        },
+        "category_url": "/comics/{theme}/ob/{sort}/st/{status}",
+        "category_page_url": "/comics/{theme}/ob/{sort}/st/{status}/page/{page}",
+        "category_list_dom": ".imgBox .col_3_1 li",
+        "category_cover_dom": ".ImgA img",
+        "category_title_dom": ".txtA",
+        "category_url_dom": ".ImgA",
+        "category_page_size": 18
+      }
+    },
+    {
+      "type": "config",
+      "needsMagic": true,
+      "config": {
+        "name": "摸摸漫画",
+        "icon": "https://mmero.com/_ipx/w_160&f_webp&q_75/logo.png",
+        "url": "https://mmero.com/",
+        "comic_name_dom": ".detailed .title",
+        "chapter_fallback_link_dom":".button-group a",
+        "chapter_name_dom": ".chapter-list a",
+        "chapter_link_dom": ".chapter-list a",
+        "img_dom": ".skeleton img",
+        "chapter_order": 1,
+        "use_frame": 1,
+        "img_attr": "src",
+        "img_load_mode": 2,
+        "use_webview_fetch": true,
+        "use_blob_base64": true,
+        "categories": {
+          "tagIds": {
+            "title": "题材",
+            "options": [
+              {"value": "", "name": "全部"},
+              {"value": "50", "name": "熟女"},
+              {"value": "70", "name": "学生"},
+              {"value": "129", "name": "魔法少女"},
+              {"value": "159", "name": "辣妹"},
+              {"value": "167", "name": "巫女"},
+              {"value": "196", "name": "女骑士"},
+              {"value": "295", "name": "姐姐"},
+              {"value": "307", "name": "妹妹"},
+              {"value": "348", "name": "青梅竹马"},
+              {"value": "412", "name": "护士"},
+              {"value": "510", "name": "人妻"},
+              {"value": "602", "name": "女仆"},
+              {"value": "604", "name": "修女"},
+              {"value": "605", "name": "女王"},
+              {"value": "606", "name": "公主"},
+              {"value": "607", "name": "病娇"},
+              {"value": "617", "name": "御姐"},
+              {"value": "627", "name": "女医"},
+              {"value": "36", "name": "泳装"},
+              {"value": "39", "name": "兽耳"},
+              {"value": "74", "name": "眼镜"},
+              {"value": "86", "name": "兔女郎"},
+              {"value": "135", "name": "精灵"},
+              {"value": "610", "name": "黑长直"},
+              {"value": "612", "name": "魅魔"},
+              {"value": "619", "name": "黑肉"},
+              {"value": "620", "name": "金发"},
+              {"value": "11", "name": "近未来"},
+              {"value": "24", "name": "校园"},
+              {"value": "33", "name": "纯爱"},
+              {"value": "379", "name": "异世界"},
+              {"value": "621", "name": "职场"}
+            ]
+          },
+          "channel": {
+            "title": "频道",
+            "options": [
+              {"value": "", "name": "全部"},
+              {"value": "1", "name": "韩漫"},
+              {"value": "2", "name": "同人志"},
+              {"value": "4", "name": "杂质"},
+              {"value": "5", "name": "单行本"}
+            ]
+          },
+          "isEnded": {
+            "title": "进度",
+            "options": [
+              {"value": "", "name": "全部"},
+              {"value": "false", "name": "连载中"},
+              {"value": "true", "name": "已完结"}
+            ]
+          }
+        },
+        "category_url": "/category?tagIds={tagIds}&isEnded={isEnded}&channel={channel}",
+        "category_page_url": "/category?tagIds={tagIds}&isEnded={isEnded}&channel={channel}&page={page}",
+        "category_list_dom": "#comics .items .comic",
+        "category_cover_dom": ".cover img",
+        "category_title_dom": "h5",
+        "category_url_dom": "",
+        "category_page_size": 30
       }
     }
   ]

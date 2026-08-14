@@ -353,7 +353,7 @@ class _BookshelfPageState extends State<BookshelfPage>
         final isDark = Theme.of(context).brightness == Brightness.dark;
         return Container(
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E1E3A) : Colors.white,
+            color: isDark ? JellyTheme.cardDark : Colors.white,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
           ),
           child: SafeArea(
@@ -534,6 +534,7 @@ class _BookshelfPageState extends State<BookshelfPage>
         if (!didPop && _isSelecting) _exitSelection();
       },
       child: Scaffold(
+        backgroundColor: widget.showBackButton ? null : Colors.transparent,
         appBar: widget.showBackButton
             ? AppBar(
                 title: const Text('书架'),
@@ -810,7 +811,7 @@ class _BookshelfPageState extends State<BookshelfPage>
             final shelves = BookshelfService().bookshelves;
             return Container(
               decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF1E1E3A) : Colors.white,
+                color: isDark ? JellyTheme.cardDark : Colors.white,
                 borderRadius: const BorderRadius.vertical(
                   top: Radius.circular(24),
                 ),
@@ -1068,7 +1069,7 @@ class _BookshelfPageState extends State<BookshelfPage>
         final isDark = Theme.of(context).brightness == Brightness.dark;
         return Container(
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E1E3A) : Colors.white,
+            color: isDark ? JellyTheme.cardDark : Colors.white,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
           ),
           child: SafeArea(
@@ -1118,8 +1119,8 @@ class _BookshelfPageState extends State<BookshelfPage>
                     Icons.upload_outlined,
                     color: JellyTheme.primary,
                   ),
-                  title: const Text('传书到电脑'),
-                  subtitle: const Text('把书架的书发送到电脑/阅读器'),
+                  title: const Text('传书到手机/电脑'),
+                  subtitle: const Text('把书架的书发送到手机/电脑'),
                   onTap: () {
                     Navigator.pop(context);
                     Navigator.push(
@@ -1136,8 +1137,8 @@ class _BookshelfPageState extends State<BookshelfPage>
                     Icons.download_outlined,
                     color: JellyTheme.primary,
                   ),
-                  title: const Text('从电脑接收'),
-                  subtitle: const Text('接收电脑发来的书，自动入库'),
+                  title: const Text('从手机/电脑接收'),
+                  subtitle: const Text('接收手机/电脑发来的书，自动入库'),
                   onTap: () {
                     Navigator.pop(context);
                     Navigator.push(
@@ -1191,7 +1192,7 @@ class _BookshelfPageState extends State<BookshelfPage>
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const PopScope(
+      builder: (_) => PopScope(
         canPop: false,
         child: Center(
           child: CircularProgressIndicator(color: JellyTheme.primary),
@@ -1449,7 +1450,7 @@ class _BookshelfPageState extends State<BookshelfPage>
             SizedBox(
               height: MediaQuery.of(context).size.height * 0.4,
               child: Material(
-                color: isDark ? const Color(0xFF252542) : Colors.white,
+                color: isDark ? JellyTheme.cardDark : Colors.white,
                 borderRadius: BorderRadius.circular(20),
                 clipBehavior: Clip.antiAlias,
                 child: ListView.builder(
@@ -1507,7 +1508,7 @@ class _BookshelfPageState extends State<BookshelfPage>
       width: double.infinity,
       padding: const EdgeInsets.symmetric(vertical: 32),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF252542) : Colors.white,
+        color: isDark ? JellyTheme.cardDark : Colors.white,
         borderRadius: BorderRadius.circular(20),
       ),
       child: Column(
@@ -1642,7 +1643,7 @@ class _BookshelfPageState extends State<BookshelfPage>
           decoration: BoxDecoration(
             color: selected
                 ? JellyTheme.primary
-                : (isDark ? const Color(0xFF2D2D4A) : Colors.white),
+                : (isDark ? JellyTheme.cardDark : Colors.white),
             borderRadius: BorderRadius.circular(16),
             boxShadow: [
               BoxShadow(
@@ -1694,7 +1695,7 @@ class _BookshelfPageState extends State<BookshelfPage>
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF2D2D4A) : Colors.white,
+            color: isDark ? JellyTheme.cardDark : Colors.white,
             borderRadius: BorderRadius.circular(16),
             boxShadow: [
               BoxShadow(
@@ -2108,7 +2109,7 @@ class _ComicShelfTab extends StatelessWidget {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const PopScope(
+      builder: (_) => PopScope(
         canPop: false,
         child: Center(
           child: CircularProgressIndicator(color: JellyTheme.primary),
@@ -2847,7 +2848,7 @@ void _showShelfItemMenu(BuildContext context, String shelfId, _ShelfEntry e) {
     backgroundColor: Colors.transparent,
     builder: (ctx) => Container(
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF252542) : Colors.white,
+        color: isDark ? JellyTheme.cardDark : Colors.white,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
       ),
       child: SafeArea(

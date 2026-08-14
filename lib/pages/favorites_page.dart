@@ -184,6 +184,7 @@ class _FavoritesPageState extends State<FavoritesPage>
         if (!didPop && _isSelecting) _exitSelection();
       },
       child: Scaffold(
+        backgroundColor: widget.showBackButton ? null : Colors.transparent,
         appBar: widget.showBackButton
             ? AppBar(
                 title: const Text('收藏'),
@@ -527,7 +528,7 @@ class _FavoritesPageState extends State<FavoritesPage>
           SizedBox(
             height: MediaQuery.of(context).size.height * 0.4,
             child: Material(
-              color: isDark ? const Color(0xFF252542) : Colors.white,
+              color: isDark ? JellyTheme.cardDark : Colors.white,
               borderRadius: BorderRadius.circular(20),
               clipBehavior: Clip.antiAlias,
               child: all.isEmpty

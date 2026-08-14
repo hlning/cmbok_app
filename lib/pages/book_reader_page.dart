@@ -7,8 +7,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
-import 'package:photo_view/photo_view.dart';
-import 'package:photo_view/photo_view_gallery.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 import '../models/book.dart';
@@ -19,6 +17,7 @@ import '../services/book_font_service.dart';
 import '../services/book_paginator.dart';
 import '../services/book_page_cache_service.dart';
 import '../services/book_parser.dart';
+import '../services/gbk_txt_parser.dart';
 import '../services/book_reading_progress_service.dart';
 import '../services/reader_override_service.dart';
 import '../services/bookshelf_service.dart';
@@ -180,6 +179,16 @@ class _BookReaderPageState extends State<BookReaderPage> {
   int _bgPaginateDone = 0;
   int _bgPaginateTotal = 0;
 
+  // 懒分页：flatBlocks 总块数与已排覆盖到的 block 数，用于估算总页数/百分比。
+  // 大书（如十几万段的 TXT）不全量预排，只排当前页前方一个窗口，读到边界再补。
+  int _totalBlockCount = 0;
+  int _paginatedBlockCount = 0;
+  // 是否正在向前补排（仅此时显示底部进度条；停在窗口边界时为 false）。
+  bool _paginatingAhead = false;
+  // 懒分页窗口：当前页前方至少保留的页数；距末页 ≤ margin 时触发补排。
+  static const int _kWindowAheadPages = 80;
+  static const int _kWindowMarginPages = 12;
+
   // 图片模式：全图书走图库（PhotoView 画廊 / 消散），跳过文本分页。
   // _currentPageNotifier 在图片模式下存当前图序号，复用 HUD。
   List<int> _imageBlockIndices = const []; // flatBlocks 中 ImageBlock 的索引
@@ -189,6 +198,16 @@ class _BookReaderPageState extends State<BookReaderPage> {
 
   List<BookBlock> get _blocks => _content?.flatBlocks ?? [];
   List<int> get _chapterStarts => _content?.chapterStarts ?? [];
+
+  /// 懒分页下的显示总页数：已排完（_ongoingPaginator 已置空）用 _pages.length，
+  /// 否则按 已排页数 × 总块数 / 已排块数 估算，随补排推进收敛到真实值。
+  int get _displayTotalPages {
+    if (_ongoingPaginator == null || _pages.isEmpty) return _pages.length;
+    if (_paginatedBlockCount <= 0 || _totalBlockCount <= 0) {
+      return _pages.length;
+    }
+    return (_pages.length * _totalBlockCount / _paginatedBlockCount).round();
+  }
 
   @override
   void initState() {
@@ -232,13 +251,17 @@ class _BookReaderPageState extends State<BookReaderPage> {
       );
       // 过渡页可能只分了一部分就进来：后台继续补齐剩余页
       final pg = pf.paginator;
+      _totalBlockCount = flat.length;
       if (pg != null && !pg.finished) {
         _ongoingPaginator = pg;
+        _paginatedBlockCount = pg.currentBlockIndex;
         _bgPaginateTotal = pg.blockCount;
         _bgPaginateDone = pg.currentBlockIndex;
         WidgetsBinding.instance.addPostFrameCallback(
           (_) => _continuePagination(),
         );
+      } else {
+        _paginatedBlockCount = flat.length; // 已排完
       }
     } else {
       _pageController = PageController();
@@ -375,8 +398,13 @@ class _BookReaderPageState extends State<BookReaderPage> {
         if (c != null && c.hasClients) c.jumpToPage(_currentImageIndex);
         return;
       }
-      if (ReaderOverrideService().effectiveBookMode(widget.task.bookId) ==
-              BookReadingMode.pageTurn &&
+      final mode = ReaderOverrideService().effectiveBookMode(
+        widget.task.bookId,
+      );
+      // 仿真/覆盖无 PageView，_pageController 未挂载；其余（左右/上下/无动画）
+      // 切轴或重建后需把控制器同步到当前页
+      if (mode != BookReadingMode.simulation &&
+          mode != BookReadingMode.cover &&
           _pageController.hasClients) {
         _pageController.jumpToPage(
           _isDoublePage ? _currentSpread : _currentPage,
@@ -402,7 +430,13 @@ class _BookReaderPageState extends State<BookReaderPage> {
       // 解析 + 图片宽高比合并到同一 isolate，省 images 一次跨 isolate 深拷贝
       BookContent content;
       if (ext == 'txt') {
-        content = await compute(BookParser.parseTxt, File(path));
+        // 后台常驻 isolate 解码（GBK 表仅初始化一次，不阻塞主线程）
+        final txtFile = File(path);
+        final bytes = await txtFile.readAsBytes();
+        final title = txtFile.uri.pathSegments.isNotEmpty
+            ? txtFile.uri.pathSegments.last
+            : '未命名';
+        content = await GbkTxtParser.instance.parse(bytes, title);
       } else if (ext == 'mobi' || ext == 'azw' || ext == 'azw3') {
         final r = await compute(BookParser.parseMobiWithRatios, File(path));
         content = r.content;
@@ -440,9 +474,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
   bool get _isDoublePage {
     if (_isImageMode) return false;
     final mode = ReaderOverrideService().effectiveBookMode(widget.task.bookId);
-    if (mode != BookReadingMode.pageTurn &&
-        mode != BookReadingMode.simulation &&
-        mode != BookReadingMode.cover) {
+    // 上下翻页为纵向阅读，不支持双页并排；其余模式（左右/仿真/覆盖/无动画）均可
+    if (mode == BookReadingMode.vertical) {
       return false;
     }
     if (!ReaderOverrideService().effectiveDoublePageBook(widget.task.bookId)) {
@@ -455,9 +488,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
   bool get _isDoublePageNow {
     if (_isImageMode) return false;
     final mode = ReaderOverrideService().effectiveBookMode(widget.task.bookId);
-    if (mode != BookReadingMode.pageTurn &&
-        mode != BookReadingMode.simulation &&
-        mode != BookReadingMode.cover) {
+    if (mode == BookReadingMode.vertical) {
       return false;
     }
     if (!ReaderOverrideService().effectiveDoublePageBook(widget.task.bookId)) {
@@ -507,41 +538,115 @@ class _BookReaderPageState extends State<BookReaderPage> {
     if (kDebugMode) print('[BookReader] $msg');
   }
 
-  /// 后台流式分页：过渡页分到"够读"就进阅读器，剩余的在此继续切成页追加进 _pages。
-  /// 用户阅读不受影响（PageView 的 itemCount 随追加增长，当前页不变）。
+  /// 懒分页：向前补排一个窗口（当前页前方约 [_kWindowAheadPages] 页）即停，
+  /// 不再一口气排全本。读到距末页 ≤ [_kWindowMarginPages] 时由翻页再次触发。
   /// 旋屏 / 参数变更 / dispose 会置 _ongoingPaginator=null，循环即退出。
   Future<void> _continuePagination() async {
     final paginator = _ongoingPaginator;
-    if (paginator == null) return;
-    while (!paginator.finished && _ongoingPaginator == paginator && mounted) {
-      paginator.stepInto(_pages, chunk: 12);
-      _bgPaginateDone = paginator.currentBlockIndex;
-      if (!mounted || _ongoingPaginator != paginator) return;
-      // 续读定位：后台分页已覆盖续读 block 且用户未手动翻页 -> 跳转一次
-      final pending = _pendingResumeBlock;
-      if (pending != null &&
-          !_userPaged &&
-          paginator.currentBlockIndex > pending) {
-        _pendingResumeBlock = null;
-        final newTarget = BookPaginator.pageIndexOf(_pages, pending);
-        if (newTarget != _currentPage) {
-          _currentPage = newTarget;
-          _currentPageNotifier.value = newTarget;
-          if (_pageController.hasClients) {
-            _pageController.jumpToPage(
-              _isDoublePage ? _pageToSpread(newTarget) : newTarget,
-            );
+    if (paginator == null || _paginatingAhead) return;
+    _paginatingAhead = true;
+    if (mounted) setState(() {}); // 显示底部进度条
+    // 大书自适应 chunk：按总块数估算使总帧数约 400，避免十万级 block 的书
+    // 走 12/帧导致上万帧 setState 抖动卡死；小书（≤4800 块）仍用 12，行为不变。
+    final chunk = (paginator.blockCount ~/ 400).clamp(12, 300);
+    try {
+      while (!paginator.finished && _ongoingPaginator == paginator && mounted) {
+        paginator.stepInto(_pages, chunk: chunk);
+        _paginatedBlockCount = paginator.currentBlockIndex;
+        _bgPaginateDone = paginator.currentBlockIndex;
+        if (!mounted || _ongoingPaginator != paginator) return;
+        // 续读定位：后台分页已覆盖续读 block 且用户未手动翻页 -> 跳转一次
+        final pending = _pendingResumeBlock;
+        if (pending != null &&
+            !_userPaged &&
+            paginator.currentBlockIndex > pending) {
+          _pendingResumeBlock = null;
+          final newTarget = BookPaginator.pageIndexOf(_pages, pending);
+          if (newTarget != _currentPage) {
+            _currentPage = newTarget;
+            _currentPageNotifier.value = newTarget;
+            if (_pageController.hasClients) {
+              _pageController.jumpToPage(
+                _isDoublePage ? _pageToSpread(newTarget) : newTarget,
+              );
+            }
           }
         }
+        // 窗口已满足（前方留够页数）-> 暂停，等用户读到边界再补
+        if (_pages.length - _currentPage >= _kWindowAheadPages) break;
+        setState(() {});
+        SchedulerBinding.instance.scheduleFrame();
+        await SchedulerBinding.instance.endOfFrame;
       }
-      setState(() {});
-      SchedulerBinding.instance.scheduleFrame();
-      await SchedulerBinding.instance.endOfFrame;
+    } finally {
+      _paginatingAhead = false;
+      // 排到全书末页：落全量缓存并释放分页器
+      if (paginator.finished && _ongoingPaginator == paginator) {
+        _ongoingPaginator = null;
+        if (mounted) setState(() {}); // 清除底部进度条
+        await _writeFullCache(paginator);
+      } else if (mounted) {
+        setState(() {}); // 暂停于窗口边界：隐藏底部进度条
+      }
     }
-    // 被取消（旋屏 / 参数变更 / dispose）则不写缓存
-    if (!paginator.finished || _ongoingPaginator != paginator) return;
-    _ongoingPaginator = null;
-    if (mounted) setState(() {}); // 清除底部进度条
+  }
+
+  /// 目录远跳：目标 block 不在已排窗口内时，向前补排到覆盖目标再跳。
+  Future<void> _extendToBlock(int blockIndex) async {
+    final paginator = _ongoingPaginator;
+    if (paginator == null || _paginatingAhead) {
+      // 已排完或正忙：直接按当前已排位置跳（pageIndexOf 兜底末页）
+      _goChapterJump(blockIndex);
+      return;
+    }
+    _paginatingAhead = true;
+    if (mounted) setState(() {}); // 显示底部进度条
+    final chunk = (paginator.blockCount ~/ 400).clamp(12, 300);
+    try {
+      while (!paginator.finished &&
+          _ongoingPaginator == paginator &&
+          mounted &&
+          paginator.currentBlockIndex <= blockIndex) {
+        paginator.stepInto(_pages, chunk: chunk);
+        _paginatedBlockCount = paginator.currentBlockIndex;
+        _bgPaginateDone = paginator.currentBlockIndex;
+        setState(() {});
+        SchedulerBinding.instance.scheduleFrame();
+        await SchedulerBinding.instance.endOfFrame;
+      }
+    } finally {
+      _paginatingAhead = false;
+      if (paginator.finished && _ongoingPaginator == paginator) {
+        _ongoingPaginator = null;
+        await _writeFullCache(paginator);
+      }
+      if (mounted) {
+        _goChapterJump(blockIndex);
+        // 补到目标后再向前留一个窗口（未排完时）
+        if (_ongoingPaginator == paginator) _continuePagination();
+      }
+    }
+  }
+
+  /// 目录跳转的纯定位逻辑（不含补排）。
+  void _goChapterJump(int blockIndex) {
+    final page = BookPaginator.pageIndexOf(_pages, blockIndex);
+    final mode = ReaderOverrideService().effectiveBookMode(widget.task.bookId);
+    if (mode == BookReadingMode.simulation || mode == BookReadingMode.cover) {
+      _turnTo(page);
+    } else {
+      _currentPage = _pages.isEmpty ? 0 : page.clamp(0, _pages.length - 1);
+      _currentPageNotifier.value = _currentPage;
+      if (_pageController.hasClients) {
+        _pageController.jumpToPage(
+          _isDoublePage ? _pageToSpread(_currentPage) : _currentPage,
+        );
+      }
+    }
+    setState(() => _showControls = false);
+  }
+
+  Future<void> _writeFullCache(BookPaginator paginator) async {
     await BookPageCacheService.instance.write(
       bookId: widget.task.bookId,
       key: _paginateKey,
@@ -550,7 +655,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
       naturalWidths: _imageNaturalWidths,
       flatBlocks: paginator.blocks,
     );
-    _log('写分页缓存(后台完成) key=$_paginateKey pages=${_pages.length}');
+    _log('写分页缓存(全书完成) key=$_paginateKey pages=${_pages.length}');
   }
 
   /// 调参 / 旋屏重排：首批分到当前阅读位置即显示，剩余页后台增量补齐
@@ -565,6 +670,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
     final key = _paginateKeyOf(vpW, vpH);
     if (key == _paginateKey && _pages.isNotEmpty) return;
     _ongoingPaginator = null; // 取消旧后台分页
+    _paginatingAhead = false;
     _pendingResumeBlock = null; // 调参重排定位由首批直接完成，无需续读跳转
     _paginateKey = key;
     final typo = _typo;
@@ -580,6 +686,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
       imageNaturalWidths: _imageNaturalWidths,
       chapterStarts: starts.toSet(),
     );
+    // 大书自适应 chunk（同 _continuePagination），首批到当前阅读位置即显示
+    final chunk = (paginator.blockCount ~/ 400).clamp(12, 300);
     setState(() {
       _paginating = true;
       _paginateDone = 0;
@@ -590,7 +698,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
     var chapterDone = 0;
     // 首批：增量分到覆盖当前阅读位置（preserve），每批让出 UI
     while (!paginator.finished && paginator.currentBlockIndex <= preserve) {
-      paginator.stepInto(pages, chunk: 12);
+      paginator.stepInto(pages, chunk: chunk);
       final bi = paginator.currentBlockIndex;
       while (chapterDone < totalChapters && starts[chapterDone] < bi) {
         chapterDone++;
@@ -607,6 +715,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
       _paginating = false;
       _currentPage = target;
       _ongoingPaginator = paginator;
+      _totalBlockCount = allBlocks.length;
+      _paginatedBlockCount = paginator.currentBlockIndex;
       _bgPaginateTotal = paginator.blockCount;
       _bgPaginateDone = paginator.currentBlockIndex;
     });
@@ -661,10 +771,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
   void _onTapLeft() {
     final canPrev = _isDoublePage ? _currentSpread > 0 : _currentPage > 0;
     if (canPrev) {
-      _pageController.previousPage(
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeOutCubic,
-      );
+      _goAdjacentPage(-1);
     }
   }
 
@@ -673,11 +780,27 @@ class _BookReaderPageState extends State<BookReaderPage> {
         ? _currentSpread < _spreadCount - 1
         : _currentPage < _pages.length - 1;
     if (canNext) {
-      _pageController.nextPage(
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeOutCubic,
-      );
+      _goAdjacentPage(1);
     }
+  }
+
+  /// 翻一页（[delta] -1 上一页 / 1 下一页）。无动画模式瞬切，其余平滑滑动。
+  void _goAdjacentPage(int delta) {
+    final controllerPage = _isDoublePage ? _currentSpread : _currentPage;
+    if (ReaderOverrideService().effectiveBookMode(widget.task.bookId) ==
+        BookReadingMode.none) {
+      _pageController.jumpToPage(controllerPage + delta);
+      return;
+    }
+    delta < 0
+        ? _pageController.previousPage(
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+          )
+        : _pageController.nextPage(
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+          );
   }
 
   /// 音量键翻页：下=下一页，上=上一页。按当前模式分发到对应翻页方法。
@@ -708,6 +831,11 @@ class _BookReaderPageState extends State<BookReaderPage> {
       final imgIdx = _imageIndexOfBlock(blockIndex, clamp: true);
       if (imgIdx >= 0) _imageGoto(imgIdx);
       setState(() => _showControls = false);
+      return;
+    }
+    // 懒分页：目标 block 超出已排窗口时，先向前补排到目标再跳（目录远跳）
+    if (_ongoingPaginator != null && blockIndex > _paginatedBlockCount) {
+      _extendToBlock(blockIndex);
       return;
     }
     final page = BookPaginator.pageIndexOf(_pages, blockIndex);
@@ -755,11 +883,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(
-                Icons.error_outline,
-                size: 48,
-                color: JellyTheme.error,
-              ),
+              Icon(Icons.error_outline, size: 48, color: JellyTheme.error),
               const SizedBox(height: 16),
               Text(
                 '打开失败：$_error',
@@ -871,8 +995,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
                   safeRight,
                 ),
               ),
-              // 后台流式分页进行中：底部细进度条，不打扰阅读
-              if (_ongoingPaginator != null)
+              // 懒分页正在向前补排：底部细进度条，不打扰阅读（停在窗口边界时不显示）
+              if (_paginatingAhead)
                 Positioned(
                   left: 0,
                   right: 0,
@@ -930,6 +1054,10 @@ class _BookReaderPageState extends State<BookReaderPage> {
       onPointerUp: _onPointerUp,
       child: PageView.builder(
         controller: _pageController,
+        // 上下模式纵向翻页，其余（左右/无动画）横向
+        scrollDirection: mode == BookReadingMode.vertical
+            ? Axis.vertical
+            : Axis.horizontal,
         physics: const ClampingScrollPhysics(),
         itemCount: _isDoublePage ? _spreadCount : _pages.length,
         onPageChanged: (i) {
@@ -941,9 +1069,15 @@ class _BookReaderPageState extends State<BookReaderPage> {
             widget.task.bookId,
             _pages[page].firstBlockIndex,
             page,
-            _pages.length,
+            _displayTotalPages,
           );
           _applyReadingStatus();
+          // 懒分页：靠近已排窗口末尾时向前补排一个窗口
+          if (_ongoingPaginator != null &&
+              !_paginatingAhead &&
+              _pages.length - page <= _kWindowMarginPages) {
+            _continuePagination();
+          }
         },
         itemBuilder: (context, index) => _isDoublePage
             ? _buildDoublePageSpread(
@@ -1287,9 +1421,15 @@ class _BookReaderPageState extends State<BookReaderPage> {
       widget.task.bookId,
       _pages[index].firstBlockIndex,
       index,
-      _pages.length,
+      _displayTotalPages,
     );
     _applyReadingStatus();
+    // 懒分页（仿真/封面模式不经 onPageChanged）：靠近已排窗口末尾时补排
+    if (_ongoingPaginator != null &&
+        !_paginatingAhead &&
+        _pages.length - index <= _kWindowMarginPages) {
+      _continuePagination();
+    }
   }
 
   /// 按当前进度把书归位到"正在读"/"已读完"书架（幂等，带状态缓存避免频繁调用）。
@@ -1563,73 +1703,8 @@ class _BookReaderPageState extends State<BookReaderPage> {
   }
 
   Widget _buildImageGallery() {
-    // 仿真模式 -> 消散（交叉淡入淡出）；其余 -> PhotoView 画廊（左右翻页 + 双指缩放）
-    if (ReaderOverrideService().effectiveBookMode(widget.task.bookId) ==
-        BookReadingMode.simulation) {
-      return _buildImageDissolve();
-    }
-    return _buildImagePhotoGallery();
-  }
-
-  Widget _buildImagePhotoGallery() {
-    _imagePageController ??= PageController(initialPage: _currentImageIndex);
-    return GestureDetector(
-      onTapUp: _handleImageTap,
-      child: PhotoViewGallery.builder(
-        scrollPhysics: const ClampingScrollPhysics(),
-        pageController: _imagePageController,
-        itemCount: _imageBlockIndices.length,
-        builder: (context, index) {
-          final loader = _content?.imageLoader;
-          final ImageProvider provider;
-          if (loader != null) {
-            // PDF 懒加载：经 ImageProvider 按需光栅化（避免 MemoryImage 空指针崩溃）
-            final block = _blocks[_imageBlockIndices[index]] as ImageBlock;
-            provider = _PdfPageImageProvider(
-              block.imageKey,
-              _pdfTargetWidth,
-              loader,
-            );
-          } else {
-            provider = MemoryImage(_imageBytesAt(index)!);
-          }
-          return PhotoViewGalleryPageOptions(
-            imageProvider: provider,
-            initialScale: PhotoViewComputedScale.contained,
-            minScale: PhotoViewComputedScale.contained,
-            maxScale: PhotoViewComputedScale.covered * 2,
-            errorBuilder: (context, error, stackTrace) => Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.broken_image, size: 48, color: Colors.grey),
-                  const SizedBox(height: 8),
-                  Text(
-                    '第 ${index + 1} 张加载失败',
-                    style: const TextStyle(color: Colors.grey),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-        loadingBuilder: (context, event) => const Center(
-          child: SizedBox(
-            width: 30,
-            height: 30,
-            child: CircularProgressIndicator(),
-          ),
-        ),
-        backgroundDecoration: const BoxDecoration(color: Colors.black),
-        onPageChanged: (i) {
-          _currentImageIndex = i;
-          _currentPageNotifier.value = i;
-          _recordImageProgress();
-          _applyReadingStatus();
-          _preloadAdjacentImages(i);
-        },
-      ),
-    );
+    // 图片模式统一用消散（交叉淡入淡出），不跟随图书阅读器的翻页模式设置
+    return _buildImageDissolve();
   }
 
   Widget _buildImageDissolve() {
@@ -1842,7 +1917,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
               builder: (_, p, _) {
                 final total = _isImageMode
                     ? _imageBlockIndices.length
-                    : _pages.length;
+                    : _displayTotalPages;
                 return Text(total > 0 ? '${p + 1}/$total' : '', style: style);
               },
             ),
@@ -1871,7 +1946,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
                   builder: (_, p, _) {
                     final total = _isImageMode
                         ? _imageBlockIndices.length
-                        : _pages.length;
+                        : _displayTotalPages;
                     if (total <= 0) return const SizedBox.shrink();
                     final pct = ((p + 1) / total * 100)
                         .clamp(0, 100)
@@ -2345,11 +2420,20 @@ class _BookReaderPageState extends State<BookReaderPage> {
                           child: Row(
                             children: [
                               _bookModeChip(
-                                '翻页',
+                                '左右',
                                 draftMode == BookReadingMode.pageTurn,
                                 isDark,
                                 () => setSheet(
                                   () => draftMode = BookReadingMode.pageTurn,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              _bookModeChip(
+                                '上下',
+                                draftMode == BookReadingMode.vertical,
+                                isDark,
+                                () => setSheet(
+                                  () => draftMode = BookReadingMode.vertical,
                                 ),
                               ),
                               const SizedBox(width: 8),
@@ -2368,6 +2452,15 @@ class _BookReaderPageState extends State<BookReaderPage> {
                                 isDark,
                                 () => setSheet(
                                   () => draftMode = BookReadingMode.cover,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              _bookModeChip(
+                                '无动画',
+                                draftMode == BookReadingMode.none,
+                                isDark,
+                                () => setSheet(
+                                  () => draftMode = BookReadingMode.none,
                                 ),
                               ),
                             ],
@@ -2410,7 +2503,7 @@ class _BookReaderPageState extends State<BookReaderPage> {
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
-                            '横屏左右并排（仅翻页模式）',
+                            '横屏左右并排（上下模式除外）',
                             style: TextStyle(
                               fontSize: 12,
                               color: isDark

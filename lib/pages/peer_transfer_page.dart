@@ -5,6 +5,7 @@ import '../models/peer_device.dart';
 import '../models/transfer_offer.dart';
 import '../services/book_download_service.dart';
 import '../services/peer_transfer_service.dart';
+import '../services/download_service.dart';
 import '../services/settings_service.dart';
 import '../theme/jelly_theme.dart';
 
@@ -281,7 +282,7 @@ class _PeerTransferPageState extends State<PeerTransferPage> {
             final isDark = Theme.of(ctx).brightness == Brightness.dark;
             return Container(
               decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF1E1E3A) : Colors.white,
+                color: isDark ? JellyTheme.cardDark : Colors.white,
                 borderRadius: const BorderRadius.vertical(
                   top: Radius.circular(24),
                 ),
@@ -622,7 +623,7 @@ class _PeerTransferPageState extends State<PeerTransferPage> {
                             color: JellyTheme.primary.withValues(alpha: 0.12),
                             borderRadius: BorderRadius.circular(10),
                           ),
-                          child: const Icon(
+                          child: Icon(
                             Icons.menu_book_outlined,
                             color: JellyTheme.primary,
                           ),
@@ -767,7 +768,7 @@ class _PeerTransferPageState extends State<PeerTransferPage> {
                           color: JellyTheme.primary.withValues(alpha: 0.12),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(
+                        child: Icon(
                           Icons.computer_rounded,
                           color: JellyTheme.primary,
                         ),
@@ -777,7 +778,7 @@ class _PeerTransferPageState extends State<PeerTransferPage> {
                         p.platform,
                         style: const TextStyle(fontSize: 12),
                       ),
-                      trailing: const Icon(
+                      trailing: Icon(
                         Icons.send_rounded,
                         color: JellyTheme.primary,
                       ),
@@ -1025,9 +1026,28 @@ class _ShelfPickSheet extends StatefulWidget {
 }
 
 class _ShelfPickSheetState extends State<_ShelfPickSheet> {
-  final Set<String> _selected = {};
-  String _query = '';
+  final Set<String> _selectedBooks = {}; // bookId
+  final Set<String> _selectedComics = {}; // comicKey = sourceId/pathWord
+  late final TextEditingController _bookCtrl;
+  late final TextEditingController _comicCtrl;
 
+  @override
+  void initState() {
+    super.initState();
+    _bookCtrl = TextEditingController()..addListener(_onSearch);
+    _comicCtrl = TextEditingController()..addListener(_onSearch);
+  }
+
+  @override
+  void dispose() {
+    _bookCtrl.dispose();
+    _comicCtrl.dispose();
+    super.dispose();
+  }
+
+  void _onSearch() => setState(() {});
+
+  // ---------- 图书 ----------
   List<BookDownloadTask> get _allTasks =>
       BookDownloadService().tasks.values
           .where(
@@ -1038,7 +1058,7 @@ class _ShelfPickSheetState extends State<_ShelfPickSheet> {
         ..sort((a, b) => (b.downloadedAt ?? 0).compareTo(a.downloadedAt ?? 0));
 
   List<BookDownloadTask> get _filteredTasks {
-    final q = _query.trim().toLowerCase();
+    final q = _bookCtrl.text.trim().toLowerCase();
     if (q.isEmpty) return _allTasks;
     return _allTasks
         .where(
@@ -1049,170 +1069,341 @@ class _ShelfPickSheetState extends State<_ShelfPickSheet> {
         .toList();
   }
 
+  // ---------- 漫画 ----------
+  /// 仅含至少有一个已合并 EPUB 章节的漫画（无 EPUB 的漫画不显示）。
+  List<_ComicPickGroup> get _allComics {
+    final groups = <String, _ComicPickGroup>{};
+    for (final t in DownloadService().completedTasks) {
+      if (t.epubPath == null || t.epubPath!.isEmpty) continue;
+      final key = '${t.sourceId}/${t.comicPathWord}';
+      final g = groups.putIfAbsent(
+        key,
+        () => _ComicPickGroup(
+          key: key,
+          title: t.comicTitle,
+          author: t.comicAuthor,
+          cover: t.comicCover,
+        ),
+      );
+      g.tasks.add(t);
+    }
+    final list = groups.values.toList();
+    for (final g in list) {
+      g.tasks.sort((a, b) => a.chapterOrder.compareTo(b.chapterOrder));
+    }
+    list.sort((a, b) => a.title.compareTo(b.title));
+    return list;
+  }
+
+  List<_ComicPickGroup> get _filteredComics {
+    final q = _comicCtrl.text.trim().toLowerCase();
+    if (q.isEmpty) return _allComics;
+    return _allComics
+        .where(
+          (g) =>
+              g.title.toLowerCase().contains(q) ||
+              (g.author ?? '').toLowerCase().contains(q),
+        )
+        .toList();
+  }
+
+  /// 实际将加入清单的文件总数（图书 1 本 = 1 文件；漫画 1 部 = 其全部 EPUB 章节）。
+  int get _totalPickedCount {
+    final byKey = {for (final g in _allComics) g.key: g};
+    final comicFiles = _selectedComics.fold<int>(
+      0,
+      (s, k) => s + (byKey[k]?.tasks.length ?? 0),
+    );
+    return _selectedBooks.length + comicFiles;
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final all = _allTasks;
-    final tasks = _filteredTasks;
+    final allBooks = _allTasks;
+    final allComics = _allComics;
     final height = MediaQuery.of(context).size.height * 0.7;
-    return Container(
-      height: height,
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E1E3A) : Colors.white,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          children: [
-            const SizedBox(height: 12),
-            Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: isDark
-                    ? Colors.white.withValues(alpha: 0.2)
-                    : Colors.black.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(2),
+    return DefaultTabController(
+      length: 2,
+      child: Container(
+        height: height,
+        decoration: BoxDecoration(
+          color: isDark ? JellyTheme.cardDark : Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? Colors.white.withValues(alpha: 0.2)
+                      : Colors.black.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
+              const SizedBox(height: 10),
+              const Text(
+                '选择要发送的书',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              TabBar(
+                tabs: [
+                  Tab(text: '图书 (${allBooks.length})'),
+                  Tab(text: '漫画 (${allComics.length})'),
+                ],
+                labelColor: JellyTheme.primary,
+                unselectedLabelColor:
+                    isDark ? Colors.white54 : JellyTheme.textSecondary,
+                indicatorColor: JellyTheme.primary,
+                indicatorSize: TabBarIndicatorSize.label,
+                dividerHeight: 0,
+              ),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    _buildBookTab(isDark, allBooks),
+                    _buildComicTab(isDark, allComics),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, null),
+                      child: const Text('取消'),
+                    ),
+                    FilledButton(
+                      onPressed: _totalPickedCount == 0
+                          ? null
+                          : () => Navigator.pop(context, _collectPicked()),
+                      child: Text('加入清单($_totalPickedCount)'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBookTab(bool isDark, List<BookDownloadTask> all) {
+    final tasks = _filteredTasks;
+    return Column(
+      children: [
+        _buildSearchField(isDark, hint: '搜索书名 / 作者', controller: _bookCtrl),
+        const Divider(height: 16),
+        if (all.isEmpty)
+          _emptyHint(isDark, '暂无可发送的书\n请先下载或导入图书')
+        else if (tasks.isEmpty)
+          _emptyHint(isDark, '无匹配结果')
+        else
+          Expanded(
+            child: ListView.builder(
+              itemCount: tasks.length,
+              itemBuilder: (ctx, i) {
+                final t = tasks[i];
+                final selected = _selectedBooks.contains(t.bookId);
+                return CheckboxListTile(
+                  value: selected,
+                  onChanged: (v) => setState(
+                    () => v!
+                        ? _selectedBooks.add(t.bookId)
+                        : _selectedBooks.remove(t.bookId),
+                  ),
+                  title: Text(
+                    t.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    [
+                      if (t.author != null) t.author,
+                      (t.extension ?? '').toUpperCase(),
+                      if (t.isLocalImport) '本地导入',
+                    ].join(' · '),
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                );
+              },
             ),
-            const SizedBox(height: 10),
-            const Text(
-              '选择要发送的书',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '共 ${all.length} 本可发送',
+          ),
+      ],
+    );
+  }
+
+  Widget _buildComicTab(bool isDark, List<_ComicPickGroup> all) {
+    final groups = _filteredComics;
+    final epubTotal = all.fold<int>(0, (s, g) => s + g.tasks.length);
+    return Column(
+      children: [
+        _buildSearchField(
+          isDark,
+          hint: '搜索漫画名 / 作者',
+          controller: _comicCtrl,
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              '共 ${all.length} 部 · $epubTotal 个 EPUB',
               style: TextStyle(
                 fontSize: 12,
                 color: isDark ? Colors.white54 : JellyTheme.textSecondary,
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: TextField(
-                onChanged: (v) => setState(() => _query = v),
-                decoration: InputDecoration(
-                  hintText: '搜索书名 / 作者',
-                  prefixIcon: const Icon(Icons.search, size: 20),
-                  isDense: true,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
+          ),
+        ),
+        const Divider(height: 16),
+        if (all.isEmpty)
+          _emptyHint(
+            isDark,
+            '暂无可发送的漫画 EPUB\n漫画下载时需开启「合并 EPUB」选项',
+          )
+        else if (groups.isEmpty)
+          _emptyHint(isDark, '无匹配结果')
+        else
+          Expanded(
+            child: ListView.builder(
+              itemCount: groups.length,
+              itemBuilder: (ctx, i) {
+                final g = groups[i];
+                final selected = _selectedComics.contains(g.key);
+                return CheckboxListTile(
+                  value: selected,
+                  onChanged: (v) => setState(
+                    () => v!
+                        ? _selectedComics.add(g.key)
+                        : _selectedComics.remove(g.key),
                   ),
-                  suffixIcon: _query.isEmpty
-                      ? null
-                      : IconButton(
-                          icon: const Icon(Icons.close, size: 18),
-                          onPressed: () => setState(() => _query = ''),
-                        ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
+                  title: Text(
+                    g.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  filled: true,
-                  fillColor: isDark
-                      ? Colors.white.withValues(alpha: 0.08)
-                      : Colors.black.withValues(alpha: 0.05),
-                ),
-              ),
+                  subtitle: Text(
+                    [
+                      if (g.author != null && g.author!.isNotEmpty) g.author,
+                      '${g.tasks.length} 章 EPUB',
+                    ].join(' · '),
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                );
+              },
             ),
-            const Divider(height: 16),
-            if (all.isEmpty)
-              Padding(
-                padding: const EdgeInsets.all(32),
-                child: Text(
-                  '暂无可发送的书\n请先下载或导入图书',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: isDark ? Colors.white54 : JellyTheme.textSecondary,
+          ),
+      ],
+    );
+  }
+
+  Widget _buildSearchField(
+    bool isDark, {
+    required String hint,
+    required TextEditingController controller,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: TextField(
+        controller: controller,
+        decoration: InputDecoration(
+          hintText: hint,
+          prefixIcon: const Icon(Icons.search, size: 20),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 10,
+          ),
+          suffixIcon: ValueListenableBuilder<TextEditingValue>(
+            valueListenable: controller,
+            builder: (_, v, _) => v.text.isEmpty
+                ? const SizedBox.shrink()
+                : IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: controller.clear,
                   ),
-                ),
-              )
-            else if (tasks.isEmpty)
-              Padding(
-                padding: const EdgeInsets.all(32),
-                child: Text(
-                  '无匹配结果',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: isDark ? Colors.white54 : JellyTheme.textSecondary,
-                  ),
-                ),
-              )
-            else
-              Expanded(
-                child: ListView.builder(
-                  itemCount: tasks.length,
-                  itemBuilder: (ctx, i) {
-                    final t = tasks[i];
-                    final selected = _selected.contains(t.bookId);
-                    return CheckboxListTile(
-                      value: selected,
-                      onChanged: (v) => setState(
-                        () => v!
-                            ? _selected.add(t.bookId)
-                            : _selected.remove(t.bookId),
-                      ),
-                      title: Text(
-                        t.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(
-                        [
-                          if (t.author != null) t.author,
-                          (t.extension ?? '').toUpperCase(),
-                          if (t.isLocalImport) '本地导入',
-                        ].join(' · '),
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context, null),
-                    child: const Text('取消'),
-                  ),
-                  FilledButton(
-                    onPressed: _selected.isEmpty
-                        ? null
-                        : () {
-                            final picked = all
-                                .where((t) => _selected.contains(t.bookId))
-                                .map((t) {
-                                  final sub =
-                                      [
-                                            if (t.author != null) t.author,
-                                            (t.extension ?? '').toUpperCase(),
-                                          ]
-                                          .whereType<String>()
-                                          .where((s) => s.isNotEmpty)
-                                          .join(' · ');
-                                  return _PickedFile(
-                                    path: t.localPath!,
-                                    title: t.title,
-                                    subtitle: sub.isEmpty ? null : sub,
-                                  );
-                                })
-                                .toList();
-                            Navigator.pop(context, picked);
-                          },
-                    child: Text('加入清单(${_selected.length})'),
-                  ),
-                ],
-              ),
-            ),
-          ],
+          ),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
+          ),
+          filled: true,
+          fillColor: isDark
+              ? Colors.white.withValues(alpha: 0.08)
+              : Colors.black.withValues(alpha: 0.05),
         ),
       ),
     );
   }
+
+  Widget _emptyHint(bool isDark, String text) {
+    return Padding(
+      padding: const EdgeInsets.all(32),
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          color: isDark ? Colors.white54 : JellyTheme.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  List<_PickedFile> _collectPicked() {
+    final picked = <_PickedFile>[];
+
+    // 图书
+    for (final t in _allTasks) {
+      if (!_selectedBooks.contains(t.bookId)) continue;
+      final sub = [
+        if (t.author != null) t.author,
+        (t.extension ?? '').toUpperCase(),
+      ].whereType<String>().where((s) => s.isNotEmpty).join(' · ');
+      picked.add(_PickedFile(
+        path: t.localPath!,
+        title: t.title,
+        subtitle: sub.isEmpty ? null : sub,
+      ));
+    }
+
+    // 漫画：每部漫画的全部已合并 EPUB 章节
+    for (final g in _allComics) {
+      if (!_selectedComics.contains(g.key)) continue;
+      for (final t in g.tasks) {
+        picked.add(_PickedFile(
+          path: t.epubPath!,
+          title: '${g.title} - ${t.chapterTitle}',
+          subtitle: 'EPUB · ${t.chapterTitle}',
+        ));
+      }
+    }
+
+    return picked;
+  }
+}
+
+/// 漫画分组（书架传书·漫画 Tab）：同一部漫画下所有已合并 EPUB 的章节。
+class _ComicPickGroup {
+  _ComicPickGroup({
+    required this.key,
+    required this.title,
+    this.author,
+    required this.cover,
+  });
+
+  final String key; // sourceId/pathWord
+  final String title;
+  final String? author;
+  final String cover;
+  final List<DownloadTask> tasks = []; // 已合并 EPUB 的章节（epubPath 非空）
 }

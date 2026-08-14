@@ -168,7 +168,7 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
               color: Colors.transparent,
               child: Container(
                 decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF2D2D4A) : Colors.white,
+                  color: isDark ? JellyTheme.cardDark : Colors.white,
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(
                     color: isDark
@@ -464,7 +464,7 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
           ),
         ),
         const SizedBox(height: 2),
-        const Text(
+        Text(
           '图书账号',
           style: TextStyle(fontSize: 13, color: JellyTheme.textSecondary),
         ),
@@ -481,7 +481,7 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
         return Container(
           padding: const EdgeInsets.all(pad),
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF2D2D4A) : const Color(0xFFEEF0F7),
+            color: isDark ? JellyTheme.cardDark : const Color(0xFFEEF0F7),
             borderRadius: BorderRadius.circular(16),
           ),
           child: SizedBox(
@@ -557,7 +557,7 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
               keyboardType: TextInputType.emailAddress,
               suffix: _loginHistory.isNotEmpty
                   ? IconButton(
-                      icon: const Icon(
+                      icon: Icon(
                         Icons.keyboard_arrow_down_rounded,
                         size: 22,
                         color: JellyTheme.textSecondary,
@@ -640,10 +640,7 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
         Expanded(
           child: Text(
             text,
-            style: const TextStyle(
-              fontSize: 13,
-              color: JellyTheme.textSecondary,
-            ),
+            style: TextStyle(fontSize: 13, color: JellyTheme.textSecondary),
           ),
         ),
       ],
@@ -738,19 +735,12 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
       ),
       child: Row(
         children: [
-          const Icon(
-            Icons.card_giftcard_rounded,
-            size: 18,
-            color: JellyTheme.accent,
-          ),
+          Icon(Icons.card_giftcard_rounded, size: 18, color: JellyTheme.accent),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               '注册自有账号，享每日 ${ZlibraryService.loggedDailyLimit} 本下载额度',
-              style: const TextStyle(
-                fontSize: 13,
-                color: JellyTheme.textSecondary,
-              ),
+              style: TextStyle(fontSize: 13, color: JellyTheme.textSecondary),
             ),
           ),
         ],
@@ -774,7 +764,7 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
           padding: const EdgeInsets.symmetric(horizontal: 16),
         ),
         child: _sendingCode
-            ? const SizedBox(
+            ? SizedBox(
                 width: 18,
                 height: 18,
                 child: CircularProgressIndicator(
@@ -812,13 +802,13 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
       keyboardType: keyboardType,
       decoration: InputDecoration(
         hintText: hint,
-        hintStyle: const TextStyle(color: JellyTheme.textSecondary),
+        hintStyle: TextStyle(color: JellyTheme.textSecondary),
         prefixIcon: icon != null
             ? Icon(icon, size: 20, color: JellyTheme.textSecondary)
             : null,
         suffixIcon: suffix,
         filled: true,
-        fillColor: isDark ? const Color(0xFF2D2D4A) : const Color(0xFFF2F3F8),
+        fillColor: isDark ? JellyTheme.cardDark : const Color(0xFFF2F3F8),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide.none,
@@ -841,7 +831,7 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 msg,
-                style: const TextStyle(color: JellyTheme.error, fontSize: 12),
+                style: TextStyle(color: JellyTheme.error, fontSize: 12),
               ),
             ),
     );
@@ -857,7 +847,7 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 msg,
-                style: const TextStyle(color: JellyTheme.success, fontSize: 12),
+                style: TextStyle(color: JellyTheme.success, fontSize: 12),
               ),
             ),
     );
@@ -872,7 +862,7 @@ class _ZlibraryAuthPageState extends State<ZlibraryAuthPage>
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Text(
             text,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 13,
               color: JellyTheme.primary,
               fontWeight: FontWeight.w500,

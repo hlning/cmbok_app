@@ -31,11 +31,24 @@ class JellySearchBar extends StatefulWidget {
 class _JellySearchBarState extends State<JellySearchBar> {
   bool _isFocused = false;
   final FocusNode _focusNode = FocusNode();
+  bool _userTapped = false; // 区分"用户点击搜索框"与"路由返回时 Flutter 自动抓取焦点"
+  bool _autoFocusConsumed = false; // widget.autofocus 的首次自动获焦放行标记
 
   @override
   void initState() {
     super.initState();
     _focusNode.addListener(() {
+      if (_focusNode.hasFocus && !_userTapped) {
+        if (widget.autofocus && !_autoFocusConsumed) {
+          // 弹窗搜索首次打开的合法 autofocus，放行一次
+          _autoFocusConsumed = true;
+        } else {
+          // 路由（详情/弹窗）返回时 Flutter 会把焦点自动交给搜索框，非用户意愿 → 失焦
+          _focusNode.unfocus();
+          return;
+        }
+      }
+      if (!_focusNode.hasFocus) _userTapped = false; // 失焦后重置，下次仍按"非用户"判定
       if (mounted) setState(() => _isFocused = _focusNode.hasFocus);
       widget.onFocusChange?.call(_focusNode.hasFocus);
     });
@@ -56,7 +69,7 @@ class _JellySearchBarState extends State<JellySearchBar> {
     return Container(
       height: 50,
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF2D2D4A) : Colors.white,
+        color: isDark ? JellyTheme.cardDark : Colors.white,
         borderRadius: BorderRadius.circular(25), // 胶囊形状（半径=高度的一半）
         boxShadow: [
           BoxShadow(
@@ -68,48 +81,52 @@ class _JellySearchBarState extends State<JellySearchBar> {
           ),
         ],
       ),
-      child: TextField(
-        controller: widget.controller,
-        focusNode: _focusNode,
-        autofocus: widget.autofocus,
-        onTap: () => widget.onTap?.call(),
-        onSubmitted: (value) => widget.onSubmitted?.call(value),
-        onChanged: widget.onChanged,
-        textAlignVertical: TextAlignVertical.center,
-        style: TextStyle(
-          fontSize: 15,
-          height: 1.0,
-          color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
-        ),
-        decoration: InputDecoration(
-          // 关闭主题默认的灰色填充，让输入框透明白底胶囊
-          filled: false,
-          hintText: widget.hintText,
-          hintStyle: TextStyle(fontSize: 15, color: hintColor),
-          prefixIcon: Icon(
-            Icons.search_rounded,
-            color: _isFocused ? JellyTheme.navSelectedFg : hintColor,
-            size: 22,
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (_) => _userTapped = true, // 用户点击早于获焦，据此放行
+        child: TextField(
+          controller: widget.controller,
+          focusNode: _focusNode,
+          autofocus: widget.autofocus,
+          onTap: () => widget.onTap?.call(),
+          onSubmitted: (value) => widget.onSubmitted?.call(value),
+          onChanged: widget.onChanged,
+          textAlignVertical: TextAlignVertical.center,
+          style: TextStyle(
+            fontSize: 15,
+            height: 1.0,
+            color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
           ),
-          prefixIconConstraints: const BoxConstraints(
-            minWidth: 44,
-            minHeight: 44,
+          decoration: InputDecoration(
+            // 关闭主题默认的灰色填充，让输入框透明白底胶囊
+            filled: false,
+            hintText: widget.hintText,
+            hintStyle: TextStyle(fontSize: 15, color: hintColor),
+            prefixIcon: Icon(
+              Icons.search_rounded,
+              color: _isFocused ? JellyTheme.navSelectedFg : hintColor,
+              size: 22,
+            ),
+            prefixIconConstraints: const BoxConstraints(
+              minWidth: 44,
+              minHeight: 44,
+            ),
+            suffixIcon: widget.controller.text.isNotEmpty
+                ? IconButton(
+                    icon: Icon(Icons.clear_rounded, color: hintColor, size: 18),
+                    onPressed: () {
+                      widget.controller.clear();
+                      widget.onChanged?.call('');
+                      widget.onCleared?.call();
+                      _focusNode.unfocus();
+                    },
+                  )
+                : null,
+            border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 6),
           ),
-          suffixIcon: widget.controller.text.isNotEmpty
-              ? IconButton(
-                  icon: Icon(Icons.clear_rounded, color: hintColor, size: 18),
-                  onPressed: () {
-                    widget.controller.clear();
-                    widget.onChanged?.call('');
-                    widget.onCleared?.call();
-                    _focusNode.unfocus();
-                  },
-                )
-              : null,
-          border: InputBorder.none,
-          enabledBorder: InputBorder.none,
-          focusedBorder: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 6),
         ),
       ),
     );

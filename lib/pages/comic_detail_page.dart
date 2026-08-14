@@ -15,6 +15,7 @@ import '../theme/jelly_theme.dart';
 import '../widgets/download_chapter_sheet.dart';
 import '../widgets/jelly_bookshelf_dialog.dart';
 import '../widgets/jelly_score_badge.dart';
+import '../widgets/theme_background_animation.dart';
 import 'reader_page.dart';
 
 /// 日志工具
@@ -128,7 +129,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
       // 旧数据无 sourceId 时兜底当前源
       final source = (_comic.sourceId != null && _comic.sourceId!.isNotEmpty)
           ? (SourceManager().getSource(_comic.sourceId!) ??
-              SourceManager().current)
+                SourceManager().current)
           : SourceManager().current;
       final details = await source.getMangaDetailsAndChapters(
         comicToCManga(_comic, source.id),
@@ -235,21 +236,27 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       floatingActionButton: _buildBackToTopButton(),
-      body: CustomScrollView(
-        controller: _scrollController,
-        slivers: [
-          _buildAppBar(),
-          // 头部信息使用入参 comic 立即渲染，不阻塞于加载
-          _buildHeader(),
-          if (_isLoading)
-            _buildChapterLoading()
-          else if (_error != null)
-            _buildChapterError()
-          else ...[
-            _buildLatestChapters(),
-            _buildChapterSummary(),
-            ..._buildChapterList(),
-          ],
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          const RepaintBoundary(child: ThemeBackgroundAnimation()),
+          CustomScrollView(
+            controller: _scrollController,
+            slivers: [
+              _buildAppBar(),
+              // 头部信息使用入参 comic 立即渲染，不阻塞于加载
+              _buildHeader(),
+              if (_isLoading)
+                _buildChapterLoading()
+              else if (_error != null)
+                _buildChapterError()
+              else ...[
+                _buildLatestChapters(),
+                _buildChapterSummary(),
+                ..._buildChapterList(),
+              ],
+            ],
+          ),
         ],
       ),
     );
@@ -258,6 +265,8 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
   SliverAppBar _buildAppBar() {
     return SliverAppBar(
       pinned: true,
+      backgroundColor: Colors.transparent,
+      surfaceTintColor: Colors.transparent,
       title: Text(
         _comic.title,
         maxLines: 1,
@@ -300,7 +309,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
 
   /// 章节加载中（头部信息已用入参渲染，仅章节区显示加载动画）
   SliverFillRemaining _buildChapterLoading() {
-    return const SliverFillRemaining(
+    return SliverFillRemaining(
       hasScrollBody: false,
       child: Center(
         child: Column(
@@ -450,8 +459,9 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
     required IconData icon,
     required String label,
     required VoidCallback onTap,
-    Color color = JellyTheme.primary,
+    Color? color,
   }) {
+    color ??= JellyTheme.primary;
     return Material(
       color: color,
       borderRadius: BorderRadius.circular(20),
@@ -749,7 +759,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
                         ),
                       ),
                       if (isLastRead)
-                        const Positioned(
+                        Positioned(
                           left: 2,
                           top: 2,
                           child: Icon(
@@ -759,7 +769,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
                           ),
                         ),
                       if (downloaded)
-                        const Positioned(
+                        Positioned(
                           right: 2,
                           top: 2,
                           child: Icon(
@@ -799,10 +809,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
             const SizedBox(width: 8),
             Text(
               '共 $_totalChapters 话',
-              style: const TextStyle(
-                fontSize: 13,
-                color: JellyTheme.textSecondary,
-              ),
+              style: TextStyle(fontSize: 13, color: JellyTheme.textSecondary),
             ),
             if (_continueChapter != null) ...[
               const SizedBox(width: 12),
@@ -872,7 +879,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
                   ),
                 ),
                 if (isLastRead)
-                  const Positioned(
+                  Positioned(
                     left: 4,
                     top: 4,
                     child: Icon(
@@ -882,7 +889,7 @@ class _ComicDetailPageState extends State<ComicDetailPage> {
                     ),
                   ),
                 if (downloaded)
-                  const Positioned(
+                  Positioned(
                     right: 4,
                     top: 4,
                     child: Icon(

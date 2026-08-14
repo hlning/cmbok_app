@@ -142,6 +142,20 @@ class BookReadingProgressService extends ChangeNotifier {
   /// 获取某本图书的阅读进度（无则 null）
   BookReadingProgress? getProgress(String bookId) => _map[bookId];
 
+  /// 获取最近阅读的图书（按 updatedAt 倒序取第一条），返回 (bookId, progress)
+  MapEntry<String, BookReadingProgress>? getMostRecent() {
+    if (_map.isEmpty) return null;
+    String? bestKey;
+    BookReadingProgress? best;
+    _map.forEach((k, v) {
+      if (best == null || v.updatedAt > best!.updatedAt) {
+        bestKey = k;
+        best = v;
+      }
+    });
+    return bestKey != null ? MapEntry(bestKey!, best!) : null;
+  }
+
   /// 通知监听方刷新进度展示（如退出阅读器后刷新书架进度徽标）。
   /// recordBlock 故意不 notify，需在合适时机手动触发。
   void notifyProgressChanged() => notifyListeners();

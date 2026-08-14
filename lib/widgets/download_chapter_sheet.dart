@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
+
 import '../models/comic.dart';
+import '../models/trim_preset.dart';
+import '../pages/trim_preview_page.dart';
 import '../services/download_service.dart';
+import '../services/settings_service.dart';
 import '../theme/jelly_theme.dart';
 
 /// 章节选择底部弹窗（网格多列自适应）
@@ -60,9 +64,21 @@ class _DownloadChapterSheetState extends State<DownloadChapterSheet> {
         .where((c) => _selected.contains(c.id))
         .toList();
     if (toDownload.isEmpty) return;
-    DownloadService().downloadChapters(widget.comic, toDownload);
+
+    // 未开启去白边 → 直接下载
+    if (!SettingsService().trimWhitespace) {
+      _doDownload(toDownload, null);
+      return;
+    }
+
+    // 开启了去白边 → 弹确认对话框
+    _showTrimConfirmDialog(toDownload);
+  }
+
+  void _doDownload(List<ComicChapter> chapters, TrimParams? trimParams) {
+    DownloadService().downloadChapters(widget.comic, chapters,
+        trimParams: trimParams);
     if (!mounted) return;
-    // 先取 messenger 再 pop 弹窗，避免弹窗 context 失效；样式与图书下载提示一致（浮动）
     final messenger = ScaffoldMessenger.of(context);
     Navigator.of(context).pop();
     messenger
@@ -74,6 +90,52 @@ class _DownloadChapterSheetState extends State<DownloadChapterSheet> {
           behavior: SnackBarBehavior.floating,
         ),
       );
+  }
+
+  /// 去白边确认对话框
+  Future<void> _showTrimConfirmDialog(List<ComicChapter> toDownload) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final isDark = Theme.of(ctx).brightness == Brightness.dark;
+        return AlertDialog(
+          backgroundColor: isDark ? JellyTheme.cardDark : Colors.white,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('去白边下载'),
+          content: const Text('系统检测到开启了下载去白边功能，是否对本次下载应用去白边？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('不去白边'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('去白边'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted) return;
+    if (result == null) return; // 取消
+
+    if (result == false) {
+      // 不去白边 → 直接下载
+      _doDownload(toDownload, null);
+    } else {
+      // 去白边 → 跳转到预览页（先关闭底部面板）
+      Navigator.of(context).pop(); // 关闭 BottomSheet
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => TrimPreviewPage(
+            comic: widget.comic,
+            selectedChapters: toDownload,
+          ),
+        ),
+      );
+    }
   }
 
   @override
@@ -88,7 +150,7 @@ class _DownloadChapterSheetState extends State<DownloadChapterSheet> {
       builder: (context, scrollController) {
         return Container(
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E1E2A) : Colors.white,
+            color: isDark ? JellyTheme.cardDark : Colors.white,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
           ),
           child: Column(
@@ -138,7 +200,7 @@ class _DownloadChapterSheetState extends State<DownloadChapterSheet> {
           if (downloadedCount > 0)
             Text(
               '已下载 $downloadedCount',
-              style: const TextStyle(fontSize: 12, color: JellyTheme.success),
+              style: TextStyle(fontSize: 12, color: JellyTheme.success),
             ),
         ],
       ),
@@ -152,8 +214,13 @@ class _DownloadChapterSheetState extends State<DownloadChapterSheet> {
     bool isDark,
   ) {
     if (widget.chapters.isEmpty) {
-      return const Center(
-        child: Text('暂无章节', style: TextStyle(color: Colors.grey)),
+      return Center(
+        child: Text(
+          '暂无章节',
+          style: TextStyle(
+            color: isDark ? Colors.white54 : JellyTheme.textSecondary,
+          ),
+        ),
       );
     }
     return GridView.builder(

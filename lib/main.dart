@@ -6,6 +6,7 @@ import 'pages/home_page.dart';
 import 'services/book_download_service.dart';
 import 'services/book_favorites_service.dart';
 import 'services/book_font_service.dart';
+import 'services/browse_history_service.dart';
 import 'services/peer_transfer_service.dart';
 import 'services/bookshelf_service.dart';
 import 'services/book_reading_progress_service.dart';
@@ -16,12 +17,14 @@ import 'services/reading_progress_service.dart';
 import 'services/reader_override_service.dart';
 import 'services/remote_config_service.dart';
 import 'services/settings_service.dart';
+import 'services/trim_preset_service.dart';
 import 'services/theme_switch.dart';
 import 'services/view_mode.dart';
 import 'services/zlibrary_service.dart';
 import 'source/source_manager.dart';
 import 'source/webview_image_fetcher.dart';
 import 'theme/jelly_theme.dart';
+import 'utils/app_toast.dart';
 import 'utils/constants.dart';
 
 void main() async {
@@ -35,8 +38,10 @@ void main() async {
   await BookViewMode().init();
   await FavoritesService().init();
   await BookFavoritesService().init();
+  await BrowseHistoryService().init();
   await BookshelfService().init();
   await DownloadService().init();
+  await TrimPresetService().init();
   await ReadingProgressService().init();
   await BookReadingProgressService().init();
   await ZlibraryService().init();
@@ -54,8 +59,10 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin {
   final _boundaryKey = GlobalKey();
+  static final _navigatorKey = GlobalKey<NavigatorState>();
   bool _animating = false;
   bool _lastDarkMode = false;
+  String _lastPalette = 'jelly';
   late final AnimationController _revealController;
   ui.Image? _snapshot;
   Offset? _origin; // 圆形扩散动画起点（图标中心）
@@ -64,7 +71,9 @@ class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+    AppToast.init(_navigatorKey);
     _lastDarkMode = SettingsService().isDarkMode;
+    _lastPalette = SettingsService().themePreset;
     _revealController =
         AnimationController(
           vsync: this,
@@ -90,12 +99,14 @@ class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin {
     super.dispose();
   }
 
-  /// 仅在暗色模式变化时触发过渡动画；其它设置变化不重建（各自控件自行监听）
+  /// 暗色模式或主题预设变化时触发圆形扩散过渡；其它设置变化不重建（各自控件自行监听）
   void _onSettingsChanged() {
     if (!mounted || _animating) return;
     final dark = SettingsService().isDarkMode;
-    if (_lastDarkMode == dark) return;
+    final palette = SettingsService().themePreset;
+    if (_lastDarkMode == dark && _lastPalette == palette) return;
     _lastDarkMode = dark;
+    _lastPalette = palette;
     _animateThemeSwitch();
   }
 
@@ -146,6 +157,7 @@ class _MyAppState extends State<MyApp> with SingleTickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: _navigatorKey,
       title: AppConstants.appName,
       theme: JellyTheme.light,
       darkTheme: JellyTheme.dark,

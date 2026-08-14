@@ -14,8 +14,11 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Directory, File, Platform;
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'site_config.dart';
@@ -35,16 +38,26 @@ class WebViewImageFetcher {
   /// 串行化：fetch 依次排队执行，_last 完成后才跑下一个
   Future<void> _last = Future.value();
 
+  /// webview_flutter 仅提供 Android/iOS 平台实现；桌面端（Windows/macOS/Linux）
+  /// 无对应 WebViewPlatform，构造 WebViewController 会触发断言。桌面端不初始化，
+  /// 取图/抓页等 WebView 能力不可用（调用方 try/catch 会优雅降级）。
+  bool get _supported => Platform.isAndroid || Platform.isIOS;
+
   void init() {
     if (_initialized) return;
+    if (!_supported) {
+      throw UnsupportedError('WebView 取图仅支持 Android/iOS，当前平台不可用');
+    }
     controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageFinished: (_) => _pageCompleter?.complete(),
           onWebResourceError: (e) {
-            _log('资源错误: ${e.description}');
-            _pageCompleter?.completeError(Exception(e.description));
+            // 子资源错误（如 ORB 阻止的跨域图片、广告、favicon 等）很常见，
+            // 不应中断主页面加载。只记日志，页面是否成功以 onPageFinished 为准，
+            // 主页面真失败由 30s 超时兜底。
+            _log('资源错误: ${e.description} (忽略，不影响主页面)');
           },
         ),
       );
@@ -56,6 +69,8 @@ class WebViewImageFetcher {
   /// 根树挂载的 1px 隐藏 WebView（放 Stack 最底层，被上层覆盖不可见）。
   /// 1px 可见尺寸确保 Android/iOS 平台视图正常创建与加载（Offstage/0 尺寸可能不运行）。
   Widget buildHiddenWebView() {
+    // 桌面端无 WebView 平台实现，不挂载（返回零尺寸占位，作为 Stack 子项合法）
+    if (!_supported) return const SizedBox.shrink();
     init();
     return Positioned(
       left: 0,
@@ -260,7 +275,11 @@ $chapterJsonScript
 
   /// 注入 async 脚本并轮询结果（scriptBody 作为 async 函数体，可 return/await）。
   /// 返回 decoded JSON（Map/List/标量）；脚本抛错则抛 Exception。
-  Future<dynamic> _runAsyncScript(String scriptBody) async {
+  /// [chunkSize] > 0 时分批回传：结果可能是整章 base64 图片（100MB+），
+  /// 一次 JSON.stringify 跨 WebView JS 桥会在 Java 侧产生等大的单次分配，
+  /// 直接 OOM 崩溃（摸摸漫画实测 121MB 分配 vs 256MB 堆上限）。
+  /// 分批后单次桥传输只有几 MB。
+  Future<dynamic> _runAsyncScript(String scriptBody, {int chunkSize = 0}) async {
     final inject =
         '''
 (function(){
@@ -288,16 +307,42 @@ $scriptBody
         'window._fetchDone === true ? 1 : 0',
       );
       if (done == 1) {
-        final raw = await controller.runJavaScriptReturningResult(
-          'JSON.stringify(window._fetchResult)',
+        // 先探结果形态：错误对象是小对象，直接回传；数组则按 chunkSize 分批
+        final probeRaw = await controller.runJavaScriptReturningResult(
+          'JSON.stringify({err: (window._fetchResult && window._fetchResult.__error)'
+          ' ? String(window._fetchResult.__error) : "",'
+          ' n: Array.isArray(window._fetchResult) ? window._fetchResult.length : 0})',
         );
-        final jsonStr = _unwrapJsString(raw);
-        final decoded = jsonDecode(jsonStr);
-        if (decoded is Map && decoded.containsKey('__error')) {
-          final errMsg = decoded['__error']?.toString() ?? 'unknown';
-          throw Exception('取章节脚本错误: $errMsg');
+        final probe = jsonDecode(_unwrapJsString(probeRaw));
+        if (probe is Map && (probe['err'] as String? ?? '').isNotEmpty) {
+          throw Exception('取章节脚本错误: ${probe['err']}');
         }
-        return decoded;
+        final total = (probe is Map ? probe['n'] : 0) as int? ?? 0;
+        if (chunkSize <= 0 || total == 0) {
+          final raw = await controller.runJavaScriptReturningResult(
+            'JSON.stringify(window._fetchResult)',
+          );
+          final jsonStr = _unwrapJsString(raw);
+          final decoded = jsonDecode(jsonStr);
+          if (decoded is Map && decoded.containsKey('__error')) {
+            final errMsg = decoded['__error']?.toString() ?? 'unknown';
+            throw Exception('取章节脚本错误: $errMsg');
+          }
+          return decoded;
+        }
+        // 分批回传：逐段 slice + JSON.stringify，单次桥负载 = chunkSize 张
+        final merged = <dynamic>[];
+        for (var i = 0; i < total; i += chunkSize) {
+          final end = (i + chunkSize) < total ? i + chunkSize : total;
+          final raw = await controller.runJavaScriptReturningResult(
+            'JSON.stringify(window._fetchResult.slice($i, $end))',
+          );
+          final decoded = jsonDecode(_unwrapJsString(raw));
+          if (decoded is List) {
+            merged.addAll(decoded);
+          }
+        }
+        return merged;
       }
     }
     throw Exception('取章节轮询超时');
@@ -316,6 +361,16 @@ $scriptBody
     // 等懒加载/JS 渲染稳定（spike 经验：加载完成后再等 ~800ms 拿全）
     await Future.delayed(const Duration(milliseconds: 800));
 
+    // imgLoadMode=2（滚到底）：懒加载站需逐段滚动到底，触发剩余图片加载。
+    if (site.imgLoadMode == 2 && site.imgDom.isNotEmpty) {
+      await _scrollToLoadAll(site.imgDom);
+    }
+
+    // blob: 图片还原：有些站（如摸摸漫画）把图片 fetch 成 blob URL，DOM 里只有 blob:，
+    // performance 里有真实请求 URL。用 fetch 响应的 responseURL 或按内容大小匹配，
+    // 把真实 URL 写回 data-original，后续通用快取就能识别。
+    await _restoreBlobImages();
+
     // TODO(2b): imgLoadMode=3（下一页）站一页一图，需循环 next_page 翻页合并。
     //   2a 验证站（MYCOMIC/咚漫）均为 mode 2，快取可一次拿全；mode 3 暂返回当前页。
     if (site.imgLoadMode == 3) {
@@ -323,6 +378,137 @@ $scriptBody
     }
 
     return _extract(site);
+  }
+
+  /// 渐进式滚动加载：imgLoadMode=2 的站（如摸摸漫画章节页）滚动时追加新的
+  /// div/img 元素到 DOM（非懒加载，是无限滚动/分页追加）。每次滚到底部触发下一批，
+  /// 监控 img 数量，连续 3 轮无增长则认为已追加完毕。
+  /// 最大滚动 80 轮，避免无限滚动页卡死。
+  Future<void> _scrollToLoadAll(String imgDom) async {
+    final imgDomJson = jsonEncode(imgDom);
+    var lastCount = await _queryImgCount(imgDomJson);
+    var stableRounds = 0;
+    for (var i = 0; i < 80; i++) {
+      // 直接滚到接近底部，触发站点追加下一批 div/img
+      await controller.runJavaScript(
+        'window.scrollTo(0, document.body.scrollHeight);',
+      );
+      // 等站点追加元素 + 图片 fetch 转 blob
+      await Future.delayed(const Duration(milliseconds: 1200));
+      final count = await _queryImgCount(imgDomJson);
+      if (count == lastCount) {
+        stableRounds++;
+        // 连续 3 轮无增长，认为已追加完毕
+        if (stableRounds >= 3) break;
+      } else {
+        stableRounds = 0;
+        lastCount = count;
+      }
+    }
+    _log('滚动加载完成: imgDom 内图片 $lastCount 张');
+  }
+
+  /// 查询 imgDom 内当前图片数量。
+  Future<int> _queryImgCount(String imgDomJson) async {
+    try {
+      final raw = await controller.runJavaScriptReturningResult(
+        '(document.querySelectorAll($imgDomJson)||[]).length',
+      );
+      if (raw is int) return raw;
+      return int.tryParse(raw.toString()) ?? 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  /// blob: 图片还原：摸摸漫画等站把图片 fetch 为 blob URL，DOM 中只有 blob: 前缀地址。
+  /// 双策略：
+  ///   1) 按 alt 匹配：img.alt 非空时，在 performance 图片资源 URL 中查找含 alt 文本的
+  ///      资源（列表页封面 id 通常在 URL 路径里，命中率高）。
+  ///   2) 顺序对齐：未匹配上的剩余 blob img，按 DOM 顺序与 performance 中最后 N 张
+  ///      图片资源一一对应（章节图加载顺序与 DOM 顺序一致，命中率高）。
+  Future<void> _restoreBlobImages() async {
+    try {
+      final raw = await controller.runJavaScriptReturningResult(r'''
+(function(){
+  try {
+    var perfImgs = [];
+    if (window.performance && performance.getEntriesByType) {
+      var entries = performance.getEntriesByType('resource');
+      for (var i = 0; i < entries.length; i++) {
+        var name = entries[i].name;
+        if (/\.(jpe?g|png|webp|gif|bmp)(\?|#|$)/i.test(name) && name.indexOf('blob:') !== 0) {
+          perfImgs.push(name);
+        }
+      }
+    }
+    var blobImgs = document.querySelectorAll('img[src^="blob:"]');
+    var matchedAlt = 0;
+    var matchedOrder = 0;
+    var unmatched = [];
+
+    // 策略 1: 按 alt/父链接 href 匹配（列表页封面 id 在 URL 中）
+    // alt 是漫画 id（如 "53329"），封面图通常在 <a href="/comics/53329"> 内，
+    // 优先 alt，再用最近父级 a 的 href 作为匹配键。
+    for (var i = 0; i < blobImgs.length; i++) {
+      var img = blobImgs[i];
+      if (img.getAttribute('data-src') || img.getAttribute('data-original') ||
+          img.getAttribute('data-lazy-src') || img.getAttribute('data-url')) {
+        continue;
+      }
+      var keys = [];
+      var alt = (img.getAttribute('alt') || '').trim();
+      if (alt) keys.push(alt);
+      var parent = img.closest('a[href]');
+      if (parent) {
+        var href = parent.getAttribute('href') || '';
+        var m = href.match(/\/(\d+)(?:[\/?#]|$)/);
+        if (m && keys.indexOf(m[1]) === -1) keys.push(m[1]);
+      }
+      var found = false;
+      for (var k = 0; k < keys.length && !found; k++) {
+        for (var j = 0; j < perfImgs.length; j++) {
+          if (perfImgs[j].indexOf(keys[k]) !== -1) {
+            img.setAttribute('data-original', perfImgs[j]);
+            matchedAlt++;
+            found = true;
+            break;
+          }
+        }
+      }
+      if (!found) {
+        unmatched.push(img);
+      }
+    }
+
+    // 策略 2: 顺序对齐（章节图等无 alt 的场景）
+    if (unmatched.length > 0 && perfImgs.length >= unmatched.length) {
+      var startIdx = perfImgs.length - unmatched.length;
+      for (var i = 0; i < unmatched.length; i++) {
+        var img = unmatched[i];
+        var realUrl = perfImgs[startIdx + i];
+        if (realUrl) {
+          img.setAttribute('data-original', realUrl);
+          matchedOrder++;
+        }
+      }
+    }
+    return JSON.stringify({
+      blobCount: blobImgs.length,
+      perfImgCount: perfImgs.length,
+      matchedAlt: matchedAlt,
+      matchedOrder: matchedOrder,
+      unmatched: unmatched.length - matchedOrder
+    });
+  } catch(e) {
+    return JSON.stringify({error: String(e)});
+  }
+})();
+''');
+      _log('blob 图片还原: ${_unwrapJsString(raw)}');
+    } catch (e) {
+      _log('blob 图片还原失败（忽略）: $e');
+    }
   }
 
   Future<String> _doFetchHtml(String url) async {
@@ -337,6 +523,8 @@ $scriptBody
     }
     // 等 SPA/Alpine 渲染稳定（列表页内容较多，给足时间）
     await Future.delayed(const Duration(milliseconds: 1000));
+    // blob 图片还原（摸摸漫画等站封面图是 blob URL）
+    await _restoreBlobImages();
     // outerHTML 经 JSON.stringify -> _unwrapJsString -> jsonDecode 还原
     // （正确处理换行/引号/反斜杠转义，避免 _unwrapJsString 漏转 \n 等）
     final raw = await controller.runJavaScriptReturningResult(
@@ -354,7 +542,7 @@ $scriptBody
           final imgs = await _runScript(_imgScriptBody(site.imgScript));
           if (imgs.isNotEmpty) {
             _log(
-              'imgScript 取到 ${imgs.length} 张（尝试 $attempt）: ${imgs.take(2).join(", ")}',
+              'imgScript 取到 ${imgs.length} 张（尝试 $attempt）: ${_safeImgPreview(imgs.first)}',
             );
             return imgs;
           }
@@ -371,8 +559,160 @@ $scriptBody
       _log('imgScript 3 次均失败/空，回退通用快取');
     }
     final imgs = await _runScript(_scanScriptBody(site));
-    _log('通用快取取到 ${imgs.length} 张: ${imgs.take(2).join(", ")}');
+    _log('通用快取取到 ${imgs.length} 张${imgs.isNotEmpty ? ": ${_safeImgPreview(imgs.first)}" : ""}');
+    // useBlobBase64 站（如摸摸漫画）：图片被 fetch 为 blob URL，通用快取拿到
+    // 的真实 URL 外部请求因防盗链失败，需在 WebView 内转 base64 再逐张落盘临时文件。
+    // 非 useBlobBase64 的 blob 站：_restoreBlobImages 已把真实 URL 写回 data-original，
+    // 通用快取拿到的 URL 可直连，不走 base64。
+    if (site.useBlobBase64 && imgs.isNotEmpty && site.imgDom.isNotEmpty) {
+      _log('useBlobBase64 站，逐张落盘取图');
+      final fileImgs = await _fetchImagesToTempFiles(site.imgDom);
+      if (fileImgs.isNotEmpty) {
+        _log('落盘取到 ${fileImgs.length} 张');
+        return fileImgs;
+      }
+    }
     return imgs;
+  }
+
+  /// 逐张落盘临时文件：JS 侧一次异步取完全章 base64（存 window._fetchResult，
+  /// WebView 进程内存不影响 App 堆），Dart 侧逐张桥取 → 解码 → 写临时文件 →
+  /// 返回 file:// 路径。峰值 App 堆仅单张图片（几 MB），
+  /// 而非整章 data: URL（100MB+）。
+  Future<List<String>> _fetchImagesToTempFiles(String imgDom) async {
+    try {
+      // 1. JS 侧：一次异步取完全章 base64（存 window._fetchResult）
+      final jsBody = '''
+var imgDom = ${jsonEncode(imgDom)};
+var imgs = document.querySelectorAll(imgDom);
+var results = [];
+for (var i = 0; i < imgs.length; i++) {
+  var img = imgs[i];
+  var src = img.src || '';
+  if (!src || src.indexOf('data:') === 0) {
+    if (src.indexOf('data:') === 0) results.push(src);
+    else results.push('');
+    continue;
+  }
+  try {
+    var blobUrl = src;
+    var resp = await fetch(blobUrl, { credentials: 'include' });
+    if (!resp.ok) throw new Error('fetch failed: ' + resp.status);
+    var blob = await resp.blob();
+    var dataUrl = await new Promise(function(resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function() { resolve(reader.result); };
+      reader.onerror = function() { reject(reader.error); };
+      reader.readAsDataURL(blob);
+    });
+    results.push(dataUrl);
+  } catch(e) {
+    try {
+      var canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      var ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      results.push(canvas.toDataURL('image/jpeg', 0.9));
+    } catch(e2) {
+      results.push('');
+    }
+  }
+}
+return results;
+''';
+      await _injectAndAwaitScript(jsBody);
+
+      // 2. 探结果形态（错误对象 vs 数组）
+      final probeRaw = await controller.runJavaScriptReturningResult(
+        'JSON.stringify({err: (window._fetchResult && window._fetchResult.__error)'
+        ' ? String(window._fetchResult.__error) : "",'
+        ' n: Array.isArray(window._fetchResult) ? window._fetchResult.length : 0})',
+      );
+      final probe = jsonDecode(_unwrapJsString(probeRaw));
+      if (probe is Map && (probe['err'] as String? ?? '').isNotEmpty) {
+        throw Exception('取章节脚本错误: ${probe['err']}');
+      }
+      final total = (probe is Map ? probe['n'] : 0) as int? ?? 0;
+      if (total == 0) {
+        _log('落盘取图: 无图片');
+        return [];
+      }
+
+      // 3. 逐张桥取 → base64 解码 → 写临时文件 → 释放
+      final tempDir = await _blobTempDir;
+      final filePaths = <String>[];
+      for (var i = 0; i < total; i++) {
+        final raw = await controller.runJavaScriptReturningResult(
+          'JSON.stringify(window._fetchResult[$i])',
+        );
+        final dataUrl = jsonDecode(_unwrapJsString(raw)) as String? ?? '';
+        if (dataUrl.isEmpty) continue;
+        final commaIdx = dataUrl.indexOf(',');
+        if (commaIdx < 0) continue;
+        final bytes = base64.decode(dataUrl.substring(commaIdx + 1));
+        final file = File('$tempDir/${i.toString().padLeft(4, '0')}.jpg');
+        await file.writeAsBytes(bytes, flush: true);
+        filePaths.add(file.path);
+        // bytes + dataUrl 可 GC
+      }
+      _log('落盘取图: $total 张 → ${filePaths.length} 文件');
+      return filePaths;
+    } catch (e) {
+      _log('落盘取图失败: $e');
+      return [];
+    }
+  }
+
+  /// 注入异步脚本并轮询直到完成（结果留在 window._fetchResult，
+  /// 调用方自行取回）。供 _fetchImagesToTempFiles 使用。
+  Future<void> _injectAndAwaitScript(String scriptBody) async {
+    final inject = '''
+(function(){
+  window._fetchDone = false;
+  window._fetchResult = null;
+  (async function(){
+    try {
+      var result = await (async function(){
+$scriptBody
+      })();
+      window._fetchResult = (result === null || result === undefined) ? [] : result;
+    } catch(e) {
+      window._fetchResult = { "__error": e && e.message ? e.message : String(e) };
+    }
+    window._fetchDone = true;
+  })();
+})();
+''';
+    await controller.runJavaScript('window._fetchDone = false;');
+    await controller.runJavaScript(inject);
+    for (var i = 0; i < 60; i++) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      final done = await controller.runJavaScriptReturningResult(
+        'window._fetchDone === true ? 1 : 0',
+      );
+      if (done == 1) return;
+    }
+    throw Exception('取章节轮询超时');
+  }
+
+  /// 临时文件目录（应用缓存目录/cmbok_blob_temp/）
+  Future<String> get _blobTempDir async {
+    final dir = Directory(
+      '${(await getTemporaryDirectory()).path}/cmbok_blob_temp',
+    );
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return dir.path;
+  }
+
+  /// 清理 blob 临时文件（阅读器退出/切章节时调用）
+  Future<void> clearBlobTempFiles() async {
+    try {
+      final dir = Directory(await _blobTempDir);
+      if (await dir.exists()) await dir.delete(recursive: true);
+    } catch (e) {
+      _log('清理 blob 临时文件失败: $e');
+    }
   }
 
   /// imgScript 失败/空时诊断：log 当前页面 URL/标题 + 取图函数就绪状态 +
@@ -482,8 +822,17 @@ JSON.stringify({url:location.href,title:document.title,getUrlpics:typeof getUrlp
   if (imgDom) {
     var imgs = document.querySelectorAll(imgDom);
     for (var i=0;i<imgs.length;i++){
-      var a = imgAttr ? (imgs[i].getAttribute(imgAttr) || '') : (imgs[i].src || '');
-      if (a && a.indexOf('data:')!==0) {
+      var img = imgs[i];
+      // 优先用配置的 imgAttr 取值；如果是 blob:（摸摸漫画等站），回退到 data-original
+      // 等真实 URL 属性取路径前缀，否则前缀是 blob UUID 会过滤掉所有图。
+      var a = imgAttr ? (img.getAttribute(imgAttr) || '') : (img.src || '');
+      if (!a || a.indexOf('blob:') === 0 || a.indexOf('data:') === 0) {
+        a = img.getAttribute('data-original') ||
+            img.getAttribute('data-src') ||
+            img.getAttribute('data-lazy-src') ||
+            img.getAttribute('data-url') || '';
+      }
+      if (a && a.indexOf('data:')!==0 && a.indexOf('blob:')!==0) {
         try {
           var u = new URL(a, location.href);
           var p = u.pathname;
@@ -509,6 +858,25 @@ JSON.stringify({url:location.href,title:document.title,getUrlpics:typeof getUrlp
   return result;
 })()
 ''';
+  }
+
+  /// 日志用：图片 URL 预览，data: base64 只打类型+长度，避免刷屏。
+  String _safeImgPreview(String url) {
+    if (url.startsWith('data:')) {
+      final commaIdx = url.indexOf(',');
+      final prefix = commaIdx > 0 ? url.substring(0, commaIdx) : 'data:';
+      // base64 部分长度估算（去掉 data:xxx;base64, 前缀）
+      final b64Len = url.length - commaIdx - 1;
+      final bytesLen = (b64Len * 3 / 4).round();
+      return '$prefix (~${_formatSize(bytesLen)})';
+    }
+    return url.length > 120 ? '${url.substring(0, 120)}...' : url;
+  }
+
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '${bytes}B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)}KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
   }
 
   /// webview_flutter runJavaScriptReturningResult 对 JS 字符串值返回带引号字面量，

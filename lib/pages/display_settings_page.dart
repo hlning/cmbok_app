@@ -226,7 +226,7 @@ class _DisplaySettingsPageState extends State<DisplaySettingsPage>
                         ),
                       ),
                       const SizedBox(height: 2),
-                      const Text(
+                      Text(
                         '自定义底部导航栏显示的页面（"我的"固定显示）',
                         style: TextStyle(
                           fontSize: 12,
@@ -429,7 +429,7 @@ class _DisplaySettingsPageState extends State<DisplaySettingsPage>
                 const SizedBox(height: 4),
                 Text(
                   subtitle,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     color: JellyTheme.textSecondary,
                   ),

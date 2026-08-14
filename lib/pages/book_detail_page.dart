@@ -12,7 +12,9 @@ import '../services/bookshelf_service.dart';
 import '../services/zlibrary_service.dart';
 import '../theme/jelly_theme.dart';
 import '../widgets/jelly_bookshelf_dialog.dart';
+import '../widgets/theme_background_animation.dart';
 import 'book_reader_page.dart';
+import 'webview_page.dart';
 import 'zlibrary_auth_page.dart';
 
 /// 图书详情页面（参考漫画详情页 ComicDetailPage）
@@ -160,21 +162,29 @@ class _BookDetailPageState extends State<BookDetailPage> {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
-      body: CustomScrollView(
-        slivers: [
-          SliverAppBar(
-            pinned: true,
-            title: Text(
-              widget.book.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 16),
-            ),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          const RepaintBoundary(child: ThemeBackgroundAnimation()),
+          CustomScrollView(
+            slivers: [
+              SliverAppBar(
+                pinned: true,
+                backgroundColor: Colors.transparent,
+                surfaceTintColor: Colors.transparent,
+                title: Text(
+                  widget.book.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 16),
+                ),
+              ),
+              SliverToBoxAdapter(child: _buildContent(isDark)),
+              SliverToBoxAdapter(child: _buildDownloadCard(isDark)),
+              SliverToBoxAdapter(child: _buildRecommendations(isDark)),
+              const SliverToBoxAdapter(child: SizedBox(height: 32)),
+            ],
           ),
-          SliverToBoxAdapter(child: _buildContent(isDark)),
-          SliverToBoxAdapter(child: _buildDownloadCard(isDark)),
-          SliverToBoxAdapter(child: _buildRecommendations(isDark)),
-          const SliverToBoxAdapter(child: SizedBox(height: 32)),
         ],
       ),
     );
@@ -228,8 +238,6 @@ class _BookDetailPageState extends State<BookDetailPage> {
         : _stripHtml(book.description!);
 
     final downloadTask = BookDownloadService().task(book.id);
-    final downloadCompleted =
-        downloadTask?.status == BookDownloadStatus.completed;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 8),
@@ -317,23 +325,16 @@ class _BookDetailPageState extends State<BookDetailPage> {
             ],
           ),
           const SizedBox(height: 16),
-          // 收藏 / 书架 / 阅读(或下载) 胶囊；已下载时「重新下载」换行显示
-          Column(
+          // 收藏 / 书架 / 阅读 / 下载 胶囊
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 10,
+            runSpacing: 8,
             children: [
-              Wrap(
-                alignment: WrapAlignment.center,
-                spacing: 10,
-                runSpacing: 8,
-                children: [
-                  _buildFavoriteCapsule(),
-                  _buildBookshelfCapsule(),
-                  _buildDownloadCapsule(downloadTask),
-                ],
-              ),
-              if (downloadCompleted) ...[
-                const SizedBox(height: 10),
-                _buildRedownloadButton(),
-              ],
+              _buildFavoriteCapsule(),
+              _buildBookshelfCapsule(),
+              _buildReadCapsule(downloadTask),
+              _buildDownloadCapsule(downloadTask),
             ],
           ),
           // 简介
@@ -380,8 +381,9 @@ class _BookDetailPageState extends State<BookDetailPage> {
     required IconData icon,
     required String label,
     required VoidCallback onTap,
-    Color color = JellyTheme.primary,
+    Color? color,
   }) {
+    color ??= JellyTheme.primary;
     return Material(
       color: color,
       borderRadius: BorderRadius.circular(20),
@@ -459,7 +461,8 @@ class _BookDetailPageState extends State<BookDetailPage> {
     );
   }
 
-  Widget _buildDownloadCapsule(BookDownloadTask? task) {
+  /// 阅读胶囊：常驻。已下载 -> 离线阅读器；未下载 -> 在线阅读（注入登录 cookie）。
+  Widget _buildReadCapsule(BookDownloadTask? task) {
     final completed = task?.status == BookDownloadStatus.completed;
     if (completed && task != null) {
       return _buildCapsule(
@@ -468,21 +471,40 @@ class _BookDetailPageState extends State<BookDetailPage> {
         onTap: () => BookReaderPage.open(context, task),
       );
     }
+    final onlineUrl = widget.book.readOnlineUrl;
     return _buildCapsule(
-      icon: Icons.download_for_offline,
-      label: '下载',
-      onTap: _onDownload,
+      icon: Icons.menu_book_outlined,
+      label: '在线阅读',
+      onTap: () {
+        if (onlineUrl == null || onlineUrl.isEmpty) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              const SnackBar(
+                content: Text('暂无在线阅读地址，请先下载'),
+                duration: Duration(seconds: 2),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          return;
+        }
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) =>
+                OnlineReaderPage(url: onlineUrl, title: widget.book.title),
+          ),
+        );
+      },
     );
   }
 
-  Widget _buildRedownloadButton() {
-    return IconButton(
-      tooltip: '重新下载',
-      iconSize: 20,
-      padding: EdgeInsets.zero,
-      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-      icon: const Icon(Icons.download_for_offline, color: JellyTheme.primary),
-      onPressed: _onDownload,
+  Widget _buildDownloadCapsule(BookDownloadTask? task) {
+    final completed = task?.status == BookDownloadStatus.completed;
+    return _buildCapsule(
+      icon: Icons.download_for_offline,
+      label: completed ? '重新下载' : '下载',
+      onTap: _onDownload,
     );
   }
 
@@ -593,7 +615,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 child: Text(
                   '失败：${task.error}',
-                  style: const TextStyle(fontSize: 12, color: JellyTheme.error),
+                  style: TextStyle(fontSize: 12, color: JellyTheme.error),
                 ),
               ),
             ],
@@ -707,7 +729,7 @@ class _BookDetailPageState extends State<BookDetailPage> {
   Widget _buildRecommendations(bool isDark) {
     final titleColor = isDark ? Colors.white : JellyTheme.textPrimaryLight;
     if (_loadingRec) {
-      return const Padding(
+      return Padding(
         padding: EdgeInsets.all(24),
         child: Center(
           child: CircularProgressIndicator(

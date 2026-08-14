@@ -116,7 +116,7 @@ class _BookshelfDialogState extends State<_BookshelfDialog> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bgColor = isDark ? const Color(0xFF1E1E3A) : Colors.white;
+    final bgColor = isDark ? JellyTheme.cardDark : Colors.white;
     final textColor = isDark ? Colors.white : Colors.black87;
 
     return Container(
@@ -192,9 +192,7 @@ class _BookshelfDialogState extends State<_BookshelfDialog> {
                           ),
                           focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(
-                              color: JellyTheme.primary,
-                            ),
+                            borderSide: BorderSide(color: JellyTheme.primary),
                           ),
                         ),
                         onSubmitted: (_) => _createNewShelf(),

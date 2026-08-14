@@ -8,6 +8,7 @@ import '../source/config_manga_source.dart';
 import '../source/manga_source.dart';
 import '../source/models.dart';
 import '../source/source_manager.dart';
+import '../services/browse_history_service.dart';
 import '../services/search_history_service.dart';
 import '../services/view_mode.dart';
 import '../theme/jelly_theme.dart';
@@ -18,6 +19,7 @@ import '../widgets/jelly_comic_list_tile.dart';
 import '../widgets/jelly_search_bar.dart';
 import '../widgets/jelly_segmented_toggle.dart';
 import '../widgets/staggered_entrance.dart';
+import 'browse_history_page.dart';
 import 'comic_detail_page.dart';
 
 /// 日志工具
@@ -479,6 +481,7 @@ class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
 
   void _onComicTap(Comic comic) {
     FocusScope.of(context).unfocus(); // 进详情属"其他情况"，主动失焦收起历史与键盘
+    BrowseHistoryService().recordComic(comic); // 记录浏览（去重置顶，仅搜索页入口记录）
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -541,7 +544,7 @@ class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
         decoration: BoxDecoration(
           color: selected
               ? JellyTheme.primary
-              : (isDark ? const Color(0xFF2D2D4A) : Colors.white),
+              : (isDark ? JellyTheme.cardDark : Colors.white),
           borderRadius: BorderRadius.circular(16),
           boxShadow: [
             BoxShadow(
@@ -638,7 +641,7 @@ class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
         decoration: BoxDecoration(
           color: active
               ? JellyTheme.primary
-              : (isDark ? const Color(0xFF2D2D4A) : Colors.white),
+              : (isDark ? JellyTheme.cardDark : Colors.white),
           borderRadius: BorderRadius.circular(10),
           boxShadow: [
             BoxShadow(
@@ -656,6 +659,34 @@ class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
                     ? Colors.white
                     : (isDark ? Colors.white70 : JellyTheme.textSecondary))
               : (isDark ? Colors.white24 : Colors.black26),
+        ),
+      ),
+    );
+  }
+
+  /// 浏览历史按钮（进入浏览记录页，仅漫画）
+  Widget _buildBrowseHistoryButton(bool isDark) {
+    return Material(
+      color: JellyTheme.primary,
+      shape: const CircleBorder(),
+      elevation: 4,
+      shadowColor: JellyTheme.primary.withValues(alpha: 0.4),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => const BrowseHistoryPage(showTabs: false),
+          ),
+        ),
+        child: const SizedBox(
+          width: 36,
+          height: 36,
+          child: Icon(
+            Icons.history_rounded,
+            color: Colors.white,
+            size: 20,
+          ),
         ),
       ),
     );
@@ -703,7 +734,7 @@ class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
       final result = await showModalBottomSheet<List<FilterGroup>>(
         context: context,
         isScrollControlled: true,
-        backgroundColor: isDark ? const Color(0xFF1E1E2E) : Colors.white,
+        backgroundColor: isDark ? JellyTheme.cardDark : Colors.white,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
@@ -712,7 +743,7 @@ class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
               ? Colors.white
               : JellyTheme.textPrimaryLight;
           final chipColor = isDark
-              ? const Color(0xFF2D2D4A)
+              ? JellyTheme.cardDark
               : const Color(0xFFF0F0F5);
           final chipTextColor = isDark
               ? Colors.white70
@@ -963,7 +994,26 @@ class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
-      appBar: widget.showBackButton ? AppBar(title: const Text('漫画')) : null,
+      backgroundColor: widget.showBackButton ? null : Colors.transparent,
+      appBar: widget.showBackButton
+          ? AppBar(
+              title: const Text('漫画'),
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.history_rounded),
+                  tooltip: '浏览记录',
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          const BrowseHistoryPage(showTabs: false),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+              ],
+            )
+          : null,
       floatingActionButton: ListenableBuilder(
         listenable: SettingsService(),
         builder: (context, _) {
@@ -1000,6 +1050,13 @@ class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
                               : JellyTheme.textPrimaryLight,
                         ),
                       ),
+                    ),
+                  // 浏览历史按钮：右上角（AppBar 模式下放 AppBar.actions）
+                  if (!widget.showBackButton)
+                    Positioned(
+                      top: 6,
+                      right: 12,
+                      child: _buildBrowseHistoryButton(isDark),
                     ),
                   // 控件组：水平居中，间距大（往下错开，层次感）
                   Positioned(
@@ -1126,7 +1183,7 @@ class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const CircularProgressIndicator(color: Color(0xFF6D73AA)),
+            CircularProgressIndicator(color: JellyTheme.primary),
             const SizedBox(height: 16),
             Text(
               _categoryMode ? '正在筛选...' : '正在搜索...',
@@ -1277,10 +1334,10 @@ class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
           itemCount: _result.items.length + (_result.hasMore ? 1 : 0),
           itemBuilder: (context, index) {
             if (index == _result.items.length) {
-              return const Center(
+              return Center(
                 child: Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: CircularProgressIndicator(color: Color(0xFF6D73AA)),
+                  padding: const EdgeInsets.all(16.0),
+                  child: CircularProgressIndicator(color: JellyTheme.primary),
                 ),
               );
             }
@@ -1324,10 +1381,10 @@ class _SearchPageState extends State<SearchPage> with TickerProviderStateMixin {
           itemCount: _result.items.length + (_result.hasMore ? 1 : 0),
           itemBuilder: (context, index) {
             if (index == _result.items.length) {
-              return const Center(
+              return Center(
                 child: Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: CircularProgressIndicator(color: Color(0xFF6D73AA)),
+                  padding: const EdgeInsets.all(16.0),
+                  child: CircularProgressIndicator(color: JellyTheme.primary),
                 ),
               );
             }

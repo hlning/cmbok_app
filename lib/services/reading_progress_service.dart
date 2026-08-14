@@ -199,6 +199,20 @@ class ReadingProgressService extends ChangeNotifier {
     return _map[pathWord]?.seenChapterIds.contains(chapterId) ?? false;
   }
 
+  /// 获取最近阅读的漫画（按 updatedAt 倒序取第一条），返回 (pathWord, progress)
+  MapEntry<String, ComicReadingProgress>? getMostRecent() {
+    if (_map.isEmpty) return null;
+    String? bestKey;
+    ComicReadingProgress? best;
+    _map.forEach((k, v) {
+      if (best == null || v.updatedAt > best!.updatedAt) {
+        bestKey = k;
+        best = v;
+      }
+    });
+    return bestKey != null ? MapEntry(bestKey!, best!) : null;
+  }
+
   /// 记录打开某章节：更新续读点与已读集合，pageIndex 为当前页。
   /// 触发持久化与 notifyListeners（章节切换时进度变化，UI 需刷新）。
   void recordChapter(

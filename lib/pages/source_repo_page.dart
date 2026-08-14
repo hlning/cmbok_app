@@ -104,7 +104,7 @@ class _SourceRepoPageState extends State<SourceRepoPage> {
                 padding: const EdgeInsets.symmetric(horizontal: 4),
                 child: Text(
                   '已注册源（${sources.length}）· 关闭后不在搜索页显示',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     color: JellyTheme.textSecondary,
                   ),
@@ -141,7 +141,7 @@ class _SourceRepoPageState extends State<SourceRepoPage> {
             ),
           ),
           const SizedBox(height: 2),
-          const Text(
+          Text(
             '填写云端 sources.json 地址，更新后覆盖本地源配置',
             style: TextStyle(fontSize: 12, color: JellyTheme.textSecondary),
           ),
@@ -151,7 +151,7 @@ class _SourceRepoPageState extends State<SourceRepoPage> {
             decoration: InputDecoration(
               isDense: true,
               hintText: 'https://example.com/sources.json',
-              hintStyle: const TextStyle(
+              hintStyle: TextStyle(
                 fontSize: 13,
                 color: JellyTheme.textSecondary,
               ),
@@ -239,7 +239,7 @@ class _SourceRepoPageState extends State<SourceRepoPage> {
                 const SizedBox(height: 2),
                 Text(
                   src.needsMagic ? '需要魔法（代理/VPN）' : src.id,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     color: JellyTheme.textSecondary,
                   ),
@@ -289,7 +289,7 @@ class _SourceRepoPageState extends State<SourceRepoPage> {
       alignment: Alignment.center,
       child: Text(
         src.name.isNotEmpty ? src.name[0] : '?',
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 18,
           fontWeight: FontWeight.bold,
           color: JellyTheme.primary,

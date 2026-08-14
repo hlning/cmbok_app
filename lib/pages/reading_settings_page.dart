@@ -1,15 +1,44 @@
 import 'package:flutter/material.dart';
 import '../services/settings_service.dart';
 import '../theme/jelly_theme.dart';
-import '../widgets/jelly_segmented_toggle.dart';
 
-/// 漫画阅读模式显示顺序（与枚举顺序解耦：枚举末尾为 dissolve 以保持旧
-/// 持久化 index 不变；这里把"消散"插在中间，展示为 左右/消散/拼页）
+/// 漫画阅读模式下拉选项顺序（与枚举顺序解耦：枚举末尾为 dissolve/leftToRight/none
+/// 以保持旧持久化 index 不变；这里展示为 从右往左/从左往右/消散/拼页/无动画）
 const _mangaModes = <ReadingMode>[
   ReadingMode.pageTurn,
+  ReadingMode.leftToRight,
   ReadingMode.dissolve,
   ReadingMode.continuous,
+  ReadingMode.none,
 ];
+
+/// 漫画阅读模式下拉文案
+const _mangaModeLabels = <ReadingMode, String>{
+  ReadingMode.pageTurn: '从右往左',
+  ReadingMode.leftToRight: '从左往右',
+  ReadingMode.dissolve: '消散',
+  ReadingMode.continuous: '拼页',
+  ReadingMode.none: '无动画',
+};
+
+/// 图书阅读模式下拉选项顺序（枚举末尾为 vertical/none 以保持旧持久化
+/// index 不变；这里展示为 左右/上下/仿真/覆盖/无动画）
+const _bookModes = <BookReadingMode>[
+  BookReadingMode.pageTurn,
+  BookReadingMode.vertical,
+  BookReadingMode.simulation,
+  BookReadingMode.cover,
+  BookReadingMode.none,
+];
+
+/// 图书阅读模式下拉文案
+const _bookModeLabels = <BookReadingMode, String>{
+  BookReadingMode.pageTurn: '左右',
+  BookReadingMode.vertical: '上下',
+  BookReadingMode.simulation: '仿真',
+  BookReadingMode.cover: '覆盖',
+  BookReadingMode.none: '无动画',
+};
 
 /// 阅读设置页：漫画阅读模式（左右翻页 / 上下翻页 / 拼页）
 class ReadingSettingsPage extends StatefulWidget {
@@ -19,36 +48,7 @@ class ReadingSettingsPage extends StatefulWidget {
   State<ReadingSettingsPage> createState() => _ReadingSettingsPageState();
 }
 
-class _ReadingSettingsPageState extends State<ReadingSettingsPage>
-    with TickerProviderStateMixin {
-  late final TabController _mangaTabCtrl;
-  late final TabController _bookTabCtrl;
-  bool _mangaAnimating = false; // 防止动画触发 SettingsService 回调导致的循环
-  bool _bookAnimating = false;
-
-  @override
-  void initState() {
-    super.initState();
-    final s = SettingsService();
-    _mangaTabCtrl = TabController(
-      length: _mangaModes.length,
-      vsync: this,
-      initialIndex: _mangaModes.indexOf(s.readingMode),
-    );
-    _bookTabCtrl = TabController(
-      length: 3,
-      vsync: this,
-      initialIndex: s.bookReadingMode.index,
-    );
-  }
-
-  @override
-  void dispose() {
-    _mangaTabCtrl.dispose();
-    _bookTabCtrl.dispose();
-    super.dispose();
-  }
-
+class _ReadingSettingsPageState extends State<ReadingSettingsPage> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -58,22 +58,14 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
         listenable: SettingsService(),
         builder: (context, _) {
           final s = SettingsService();
-          // 外部状态变化时同步（比如从其他页面改了设置再回来）
-          // 但如果是当前页面正在驱动动画导致的变化，就跳过去避免循环
-          final mangaIdx = _mangaModes.indexOf(s.readingMode);
-          if (!_mangaAnimating && _mangaTabCtrl.index != mangaIdx) {
-            _mangaTabCtrl.animateTo(mangaIdx);
-          }
-          if (!_bookAnimating &&
-              _bookTabCtrl.index != s.bookReadingMode.index) {
-            _bookTabCtrl.animateTo(s.bookReadingMode.index);
-          }
           return ListView(
             padding: const EdgeInsets.all(16),
             children: [
+              _buildBookReadingModeCard(isDark, s),
+              const SizedBox(height: 12),
               _buildMangaModeCard(isDark, s),
               const SizedBox(height: 12),
-              _buildBookReadingModeCard(isDark, s),
+              _buildInkScreenCard(isDark, s),
               const SizedBox(height: 12),
               _buildPreloadCard(isDark, s),
               const SizedBox(height: 12),
@@ -87,6 +79,50 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
             ],
           );
         },
+      ),
+    );
+  }
+
+  /// 墨水屏模式开关卡片（黑白柔和显示，缓解纯白刺眼）
+  Widget _buildInkScreenCard(bool isDark, SettingsService s) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      decoration: BoxDecoration(
+        color: isDark ? JellyTheme.cardDark : JellyTheme.cardLight,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '漫画墨水屏模式',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '黑白柔和显示，缓解纯白刺眼',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: JellyTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: s.inkScreenMode,
+            activeColor: JellyTheme.primary,
+            onChanged: (v) => s.setInkScreenMode(v),
+          ),
+        ],
       ),
     );
   }
@@ -115,8 +151,8 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
                   ),
                 ),
                 const SizedBox(height: 4),
-                const Text(
-                  '左右翻页：横向逐页\n消散：当前页淡出、下一页淡入\n拼页：上下连续滚动',
+                Text(
+                  '从右往左：图片从右翻入（日漫方向）\n从左往右：图片从左翻入\n消散：当前页淡出、下一页淡入\n拼页：上下连续滚动\n无动画：点击直接切换，不滑动',
                   style: TextStyle(
                     fontSize: 12,
                     color: JellyTheme.textSecondary,
@@ -126,33 +162,34 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
             ),
           ),
           const SizedBox(width: 8),
-          AnimatedBuilder(
-            animation: _mangaTabCtrl.animation!,
-            builder: (context, _) => JellySegmentedToggle(
-              index: _mangaTabCtrl.animation!.value,
-              segments: const [
-                JellySegmentData(label: '左右'),
-                JellySegmentData(label: '消散'),
-                JellySegmentData(label: '拼页'),
-              ],
-              segmentWidth: 56,
-              onChanged: (i) {
-                _mangaAnimating = true;
-                _mangaTabCtrl.animateTo(i);
-                s.setReadingMode(_mangaModes[i]);
-                // 动画结束后清除标记（约 300ms）
-                Future.delayed(const Duration(milliseconds: 320), () {
-                  if (mounted) _mangaAnimating = false;
-                });
-              },
+          DropdownButton<ReadingMode>(
+            value: s.readingMode,
+            underline: const SizedBox(),
+            isDense: true,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
             ),
+            dropdownColor: isDark ? JellyTheme.cardDark : Colors.white,
+            items: _mangaModes
+                .map(
+                  (m) => DropdownMenuItem(
+                    value: m,
+                    child: Text(_mangaModeLabels[m]!),
+                  ),
+                )
+                .toList(),
+            onChanged: (v) {
+              if (v != null) s.setReadingMode(v);
+            },
           ),
         ],
       ),
     );
   }
 
-  /// 图书阅读模式卡片：翻页 / 仿真 / 覆盖
+  /// 图书阅读模式卡片：左右 / 上下 / 仿真 / 覆盖 / 无动画（下拉，同漫画模式）
   Widget _buildBookReadingModeCard(bool isDark, SettingsService s) {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
@@ -177,8 +214,8 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
                   ),
                 ),
                 const SizedBox(height: 4),
-                const Text(
-                  '翻页：左右平移翻页\n仿真：纸张卷曲翻页\n覆盖：新页滑入覆盖当前页',
+                Text(
+                  '左右：左右平移翻页\n上下：上下平移翻页\n仿真：纸张卷曲翻页\n覆盖：新页滑入覆盖当前页\n无动画：点击直接切换，不滑动',
                   style: TextStyle(
                     fontSize: 12,
                     color: JellyTheme.textSecondary,
@@ -188,25 +225,27 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
             ),
           ),
           const SizedBox(width: 8),
-          AnimatedBuilder(
-            animation: _bookTabCtrl.animation!,
-            builder: (context, _) => JellySegmentedToggle(
-              index: _bookTabCtrl.animation!.value,
-              segments: const [
-                JellySegmentData(label: '翻页'),
-                JellySegmentData(label: '仿真'),
-                JellySegmentData(label: '覆盖'),
-              ],
-              segmentWidth: 56,
-              onChanged: (i) {
-                _bookAnimating = true;
-                _bookTabCtrl.animateTo(i);
-                s.setBookReadingMode(BookReadingMode.values[i]);
-                Future.delayed(const Duration(milliseconds: 320), () {
-                  if (mounted) _bookAnimating = false;
-                });
-              },
+          DropdownButton<BookReadingMode>(
+            value: s.bookReadingMode,
+            underline: const SizedBox(),
+            isDense: true,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: isDark ? Colors.white : JellyTheme.textPrimaryLight,
             ),
+            dropdownColor: isDark ? JellyTheme.cardDark : Colors.white,
+            items: _bookModes
+                .map(
+                  (m) => DropdownMenuItem(
+                    value: m,
+                    child: Text(_bookModeLabels[m]!),
+                  ),
+                )
+                .toList(),
+            onChanged: (v) {
+              if (v != null) s.setBookReadingMode(v);
+            },
           ),
         ],
       ),
@@ -247,7 +286,7 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
                 ),
                 child: Text(
                   '$value',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
                     color: JellyTheme.primary,
@@ -257,7 +296,7 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
             ],
           ),
           const SizedBox(height: 4),
-          const Text(
+          Text(
             '在线阅读时预先加载后续图片，提升翻页流畅度（仅在线阅读生效）',
             style: TextStyle(fontSize: 12, color: JellyTheme.textSecondary),
           ),
@@ -275,18 +314,12 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
             children: [
               Text(
                 '${SettingsService.minPreloadImages}',
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: JellyTheme.textSecondary,
-                ),
+                style: TextStyle(fontSize: 11, color: JellyTheme.textSecondary),
               ),
               const Spacer(),
               Text(
                 '${SettingsService.maxPreloadImages}',
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: JellyTheme.textSecondary,
-                ),
+                style: TextStyle(fontSize: 11, color: JellyTheme.textSecondary),
               ),
             ],
           ),
@@ -319,7 +352,7 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
                   ),
                 ),
                 const SizedBox(height: 4),
-                const Text(
+                Text(
                   '开启后：点击左侧下一页、右侧上一页（与默认相反）',
                   style: TextStyle(
                     fontSize: 12,
@@ -363,7 +396,7 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
                   ),
                 ),
                 const SizedBox(height: 4),
-                const Text(
+                Text(
                   '横屏时左右并排显示两页',
                   style: TextStyle(
                     fontSize: 12,
@@ -407,7 +440,7 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
                   ),
                 ),
                 const SizedBox(height: 4),
-                const Text(
+                Text(
                   '阅读时在角落显示时间、页码、进度等',
                   style: TextStyle(
                     fontSize: 12,
@@ -451,7 +484,7 @@ class _ReadingSettingsPageState extends State<ReadingSettingsPage>
                   ),
                 ),
                 const SizedBox(height: 4),
-                const Text(
+                Text(
                   '阅读时按音量上/下键翻页（会接管音量键）',
                   style: TextStyle(
                     fontSize: 12,

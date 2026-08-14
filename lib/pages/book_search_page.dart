@@ -6,6 +6,7 @@ import '../models/book_category.dart';
 import '../models/search_result.dart';
 import '../services/book_download_service.dart';
 import '../services/book_view_mode.dart';
+import '../services/browse_history_service.dart';
 import '../services/search_history_service.dart';
 import '../services/zlibrary_service.dart';
 import '../theme/jelly_theme.dart';
@@ -315,7 +316,7 @@ class _BookSearchPageState extends State<BookSearchPage>
             decoration: BoxDecoration(
               color: active
                   ? JellyTheme.primary
-                  : (isDark ? const Color(0xFF2D2D4A) : Colors.white),
+                  : (isDark ? JellyTheme.cardDark : Colors.white),
               borderRadius: BorderRadius.circular(10),
               boxShadow: [
                 BoxShadow(
@@ -376,7 +377,7 @@ class _BookSearchPageState extends State<BookSearchPage>
       final result = await showModalBottomSheet<_BookCategorySheetResult?>(
         context: context,
         isScrollControlled: true,
-        backgroundColor: isDark ? const Color(0xFF1E1E2E) : Colors.white,
+        backgroundColor: isDark ? JellyTheme.cardDark : Colors.white,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
@@ -532,6 +533,7 @@ class _BookSearchPageState extends State<BookSearchPage>
   // -------------------- 详情 --------------------
 
   void _openDetail(Book book) async {
+    FocusScope.of(context).unfocus(); // 进详情前先收起键盘与历史弹层
     // 分类页来源（hash 是 dl/{slug}，无 eapi hash）：先搜索匹配 bookId 拿 eapi hash
     var target = book;
     if (book.hash.startsWith('dl/')) {
@@ -544,6 +546,7 @@ class _BookSearchPageState extends State<BookSearchPage>
       target = matched;
     }
     if (!mounted) return;
+    BrowseHistoryService().recordBook(target); // 记录浏览（去重置顶，仅搜索页入口记录）
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -573,10 +576,10 @@ class _BookSearchPageState extends State<BookSearchPage>
           padding: const EdgeInsets.all(24),
           child: Row(
             mainAxisSize: MainAxisSize.min,
-            children: const [
-              CircularProgressIndicator(color: Color(0xFF6D73AA)),
-              SizedBox(width: 16),
-              Text('正在匹配图书...'),
+            children: [
+              CircularProgressIndicator(color: JellyTheme.primary),
+              const SizedBox(width: 16),
+              const Text('正在匹配图书...'),
             ],
           ),
         ),
@@ -687,7 +690,7 @@ class _BookSearchPageState extends State<BookSearchPage>
               Container(
                 width: 64,
                 height: 64,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   color: JellyTheme.primary,
                   shape: BoxShape.circle,
                 ),
@@ -718,7 +721,7 @@ class _BookSearchPageState extends State<BookSearchPage>
                 const SizedBox(height: 2),
                 Text(
                   z.email,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 13,
                     color: JellyTheme.textSecondary,
                   ),
@@ -739,7 +742,7 @@ class _BookSearchPageState extends State<BookSearchPage>
                 ),
                 child: Row(
                   children: [
-                    const Icon(
+                    Icon(
                       Icons.menu_book_rounded,
                       size: 18,
                       color: JellyTheme.primary,
@@ -763,7 +766,7 @@ class _BookSearchPageState extends State<BookSearchPage>
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(
+                  Icon(
                     Icons.info_outline_rounded,
                     size: 15,
                     color: JellyTheme.accent,
@@ -772,7 +775,7 @@ class _BookSearchPageState extends State<BookSearchPage>
                   Expanded(
                     child: Text(
                       '退出后将回退内置账号（${ZlibraryService.builtinDailyLimit} 本/天）',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 12,
                         color: JellyTheme.textSecondary,
                       ),
@@ -828,6 +831,7 @@ class _BookSearchPageState extends State<BookSearchPage>
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
+      backgroundColor: widget.showBackButton ? null : Colors.transparent,
       appBar: widget.showBackButton
           ? AppBar(
               title: const Text('图书'),
@@ -1049,7 +1053,7 @@ class _BookSearchPageState extends State<BookSearchPage>
         decoration: BoxDecoration(
           color: selected
               ? JellyTheme.primary
-              : (isDark ? const Color(0xFF2D2D4A) : Colors.white),
+              : (isDark ? JellyTheme.cardDark : Colors.white),
           borderRadius: BorderRadius.circular(16),
           boxShadow: [
             BoxShadow(
@@ -1113,13 +1117,13 @@ class _BookSearchPageState extends State<BookSearchPage>
     if (_showHistory && !_categoryMode) return _buildHistory();
 
     if (_isSearching) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(color: Color(0xFF6D73AA)),
-            SizedBox(height: 16),
-            Text('正在筛选...', style: TextStyle(color: Colors.grey)),
+            CircularProgressIndicator(color: JellyTheme.primary),
+            const SizedBox(height: 16),
+            const Text('正在筛选...', style: TextStyle(color: Colors.grey)),
           ],
         ),
       );
@@ -1286,10 +1290,10 @@ class _BookSearchPageState extends State<BookSearchPage>
           itemCount: _result.items.length + (_result.hasMore ? 1 : 0),
           itemBuilder: (context, index) {
             if (index == _result.items.length) {
-              return const Center(
+              return Center(
                 child: Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: CircularProgressIndicator(color: Color(0xFF6D73AA)),
+                  padding: const EdgeInsets.all(16.0),
+                  child: CircularProgressIndicator(color: JellyTheme.primary),
                 ),
               );
             }
@@ -1333,10 +1337,10 @@ class _BookSearchPageState extends State<BookSearchPage>
           itemCount: _result.items.length + (_result.hasMore ? 1 : 0),
           itemBuilder: (context, index) {
             if (index == _result.items.length) {
-              return const Center(
+              return Center(
                 child: Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: CircularProgressIndicator(color: Color(0xFF6D73AA)),
+                  padding: const EdgeInsets.all(16.0),
+                  child: CircularProgressIndicator(color: JellyTheme.primary),
                 ),
               );
             }
@@ -1578,9 +1582,7 @@ class _BookCategorySheetState extends State<_BookCategorySheet> {
   Widget build(BuildContext context) {
     final isDark = widget.isDark;
     final labelColor = isDark ? Colors.white : JellyTheme.textPrimaryLight;
-    final chipColor = isDark
-        ? const Color(0xFF2D2D4A)
-        : const Color(0xFFF0F0F5);
+    final chipColor = isDark ? JellyTheme.cardDark : const Color(0xFFF0F0F5);
     final chipTextColor = isDark ? Colors.white70 : JellyTheme.textSecondary;
     // 通用 chip（子分类/语言/格式复用）
     Widget chip(String label, bool selected, VoidCallback onTap) =>

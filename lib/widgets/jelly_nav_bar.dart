@@ -6,6 +6,7 @@ import '../theme/jelly_theme.dart';
 class JellyNavBar extends StatefulWidget {
   final int currentIndex;
   final Function(int) onTap;
+  final Function(int)? onLongPress;
   final List<JellyNavItem> items;
   final bool floating;
 
@@ -13,6 +14,7 @@ class JellyNavBar extends StatefulWidget {
     super.key,
     required this.currentIndex,
     required this.onTap,
+    this.onLongPress,
     required this.items,
     this.floating = false,
   }) : assert(items.length >= 2 && items.length <= 5);
@@ -63,10 +65,17 @@ class _JellyNavBarState extends State<JellyNavBar>
       duration: const Duration(milliseconds: 850), // 切换速度放慢（原 600）
       vsync: this,
     )..value = 1.0; // 初始处于静止态，指示器归位到当前项
+    // 背景动画开关变化时重建：决定悬浮栏是否套 BackdropFilter 模糊
+    SettingsService().addListener(_onBgAnimChanged);
+  }
+
+  void _onBgAnimChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    SettingsService().removeListener(_onBgAnimChanged);
     _controller.dispose();
     super.dispose();
   }
@@ -95,7 +104,7 @@ class _JellyNavBarState extends State<JellyNavBar>
   Widget _buildFixedNavBar(bool isDark) {
     return Container(
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1A1A2E) : Colors.white,
+        color: isDark ? JellyTheme.backgroundDark : Colors.white,
         borderRadius: const BorderRadius.vertical(
           top: Radius.circular(_topRadius), // 左、右上角圆角
         ),
@@ -140,6 +149,27 @@ class _JellyNavBarState extends State<JellyNavBar>
           );
           // 胶囊居中：在屏幕边距基础上补足左右内边距，垂直结构保持不变（仍贴底部）
           final sidePad = (constraints.maxWidth - contentWidth) / 2;
+          // 背景动画开启时跳过 BackdropFilter：底层每帧重绘下，高斯模糊逐帧采样
+          // 是 GPU 主力开销；改用更高不透明度纯色（动效透出可接受，图标仍清晰）。
+          // 动画关闭时底层静止，模糊成本低，保留玻璃质感。
+          final bgAnim = SettingsService().backgroundAnimation;
+          final navBody = Container(
+            height: JellyNavBar.floatingBarHeight,
+            decoration: BoxDecoration(
+              color: (isDark ? JellyTheme.cardDark : Colors.white).withValues(
+                alpha: bgAnim ? 0.95 : 0.8,
+              ),
+              borderRadius: BorderRadius.circular(_floatingRadius),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: _floatingTopPad),
+              child: _buildNavContent(
+                height: JellyNavBar.floatingBarHeight - _floatingTopPad * 2,
+                iconOnly: true,
+                iconSize: _floatingIconSize,
+              ),
+            ),
+          );
           return Padding(
             padding: EdgeInsets.fromLTRB(
               horizontalMargin + sidePad,
@@ -162,29 +192,12 @@ class _JellyNavBarState extends State<JellyNavBar>
               ),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(_floatingRadius),
-                child: BackdropFilter(
-                  filter: JellyTheme.glassFilter,
-                  child: Container(
-                    height: JellyNavBar.floatingBarHeight,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? const Color(0xFF2D2D4A).withValues(alpha: 0.8)
-                          : Colors.white.withValues(alpha: 0.8),
-                      borderRadius: BorderRadius.circular(_floatingRadius),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: _floatingTopPad,
+                child: bgAnim
+                    ? navBody
+                    : BackdropFilter(
+                        filter: JellyTheme.glassFilter,
+                        child: navBody,
                       ),
-                      child: _buildNavContent(
-                        height:
-                            JellyNavBar.floatingBarHeight - _floatingTopPad * 2,
-                        iconOnly: true,
-                        iconSize: _floatingIconSize,
-                      ),
-                    ),
-                  ),
-                ),
               ),
             ),
           );
@@ -232,7 +245,7 @@ class _JellyNavBarState extends State<JellyNavBar>
                     child: Container(
                       decoration: BoxDecoration(
                         color: isDark
-                            ? const Color(0xFF443EB1)
+                            ? JellyTheme.navSelectedFg
                             : JellyTheme.navSelectedBg,
                         borderRadius: BorderRadius.circular(18),
                       ),
@@ -252,6 +265,9 @@ class _JellyNavBarState extends State<JellyNavBar>
                       item: widget.items[index],
                       isSelected: index == widget.currentIndex,
                       onTap: () => _onItemTap(index),
+                      onLongPress: widget.onLongPress != null
+                          ? () => widget.onLongPress!(index)
+                          : null,
                       iconOnly: iconOnly,
                       iconSize: iconSize,
                     ),
@@ -271,6 +287,7 @@ class _JellyNavItem extends StatelessWidget {
   final JellyNavItem item;
   final bool isSelected;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
   final bool iconOnly;
   final double iconSize;
 
@@ -278,6 +295,7 @@ class _JellyNavItem extends StatelessWidget {
     required this.item,
     required this.isSelected,
     required this.onTap,
+    this.onLongPress,
     this.iconOnly = false,
     this.iconSize = 22.0,
   });
@@ -291,6 +309,7 @@ class _JellyNavItem extends StatelessWidget {
 
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       splashColor: Colors.transparent,
       highlightColor: Colors.transparent,
       child: Center(

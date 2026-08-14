@@ -46,10 +46,32 @@ class DownloadSettingsPage extends StatelessWidget {
               const SizedBox(height: 12),
               _buildSwitchCard(
                 isDark,
+                title: '漫画下载去白边',
+                subtitle: '下载时自动裁剪漫画图片四周白边，提升阅读体验',
+                value: s.trimWhitespace,
+                onChanged: (v) => s.setTrimWhitespace(v),
+              ),
+              const SizedBox(height: 12),
+              _buildSwitchCard(
+                isDark,
                 title: '漫画章节合并为 EPUB',
                 subtitle: '章节下载完成后将该章图片合并为一个 .epub 文件',
                 value: s.mergeChapterToEpub,
                 onChanged: (v) => s.setMergeChapterToEpub(v),
+              ),
+              const SizedBox(height: 12),
+              _buildCard(
+                isDark,
+                title: '每N话合并为一个章节',
+                value: s.mergeChaptersPerEpub,
+                min: SettingsService.minMergeChaptersPerEpub,
+                max: SettingsService.maxMergeChaptersPerEpub,
+                subtitle: s.mergeChapterToEpub
+                    ? '下载时每 N 话合并成一个 EPUB 文件'
+                    : '需先开启「漫画章节合并为 EPUB」',
+                onChanged: s.mergeChapterToEpub
+                    ? (v) => s.setMergeChaptersPerEpub(v.round())
+                    : null,
               ),
               const SizedBox(height: 12),
               _buildSwitchCard(
@@ -69,7 +91,7 @@ class DownloadSettingsPage extends StatelessWidget {
                 child: Text(
                   '提示：同时下载量越大，下载越快但更易触发站点风控；'
                   '分片并发量越大，单章下载越快但更耗带宽。',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     color: JellyTheme.textSecondary,
                   ),
@@ -118,7 +140,7 @@ class DownloadSettingsPage extends StatelessWidget {
                   display,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     color: JellyTheme.textSecondary,
                   ),
@@ -243,7 +265,7 @@ class DownloadSettingsPage extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(
                   subtitle,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     color: JellyTheme.textSecondary,
                   ),
@@ -268,7 +290,7 @@ class DownloadSettingsPage extends StatelessWidget {
     required int min,
     required int max,
     required String subtitle,
-    required ValueChanged<double> onChanged,
+    required ValueChanged<double>? onChanged,
   }) {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
@@ -301,7 +323,7 @@ class DownloadSettingsPage extends StatelessWidget {
                 ),
                 child: Text(
                   '$value',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
                     color: JellyTheme.primary,
@@ -313,10 +335,7 @@ class DownloadSettingsPage extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             subtitle,
-            style: const TextStyle(
-              fontSize: 12,
-              color: JellyTheme.textSecondary,
-            ),
+            style: TextStyle(fontSize: 12, color: JellyTheme.textSecondary),
           ),
           Slider(
             value: value.toDouble(),
@@ -330,18 +349,12 @@ class DownloadSettingsPage extends StatelessWidget {
             children: [
               Text(
                 '$min',
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: JellyTheme.textSecondary,
-                ),
+                style: TextStyle(fontSize: 11, color: JellyTheme.textSecondary),
               ),
               const Spacer(),
               Text(
                 '$max',
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: JellyTheme.textSecondary,
-                ),
+                style: TextStyle(fontSize: 11, color: JellyTheme.textSecondary),
               ),
             ],
           ),

@@ -205,13 +205,14 @@ class _JellyBookCardState extends State<JellyBookCard>
         : CachedNetworkImage(
             imageUrl: coverUrl,
             fit: BoxFit.cover,
+            memCacheWidth: 300,
             width: width,
             height: height,
             placeholder: (c, u) => Container(
               color: isDark ? Colors.grey[800] : Colors.grey[200],
               width: width,
               height: height,
-              child: const Center(
+              child: Center(
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
                   color: JellyTheme.primary,
@@ -423,7 +424,7 @@ class _JellyBookCardState extends State<JellyBookCard>
                 ),
                 child: Text(
                   _extBadge,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 10,
                     color: JellyTheme.primary,
                     fontWeight: FontWeight.w700,

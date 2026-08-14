@@ -9,6 +9,7 @@ import '../services/platform_service.dart';
 import '../services/settings_service.dart';
 import '../services/theme_switch.dart';
 import '../services/update_service.dart';
+import '../theme/jelly_palette.dart';
 import '../theme/jelly_theme.dart';
 import '../utils/constants.dart';
 import '../widgets/bookshelf_icon.dart';
@@ -18,6 +19,8 @@ import '../widgets/update_dialog.dart';
 import 'about_page.dart';
 import 'book_search_page.dart';
 import 'bookshelf_page.dart';
+import 'browse_history_page.dart';
+import 'custom_theme_editor_page.dart';
 import 'display_settings_page.dart';
 import 'download_page.dart';
 import 'download_settings_page.dart';
@@ -40,6 +43,7 @@ class _MePageState extends State<MePage> {
   int _session = 0; // 首次切到"我的" tab 时 +1，触发卡片入场动画
   bool _hasShownEntrance = false; // 是否已播过首次入场动画
   final GlobalKey _themeToggleKey = GlobalKey(); // 暗色模式切换按钮（量取圆形扩散动画起点）
+  String? _switchingTo; // 主题切换中（主题风格面板内 loading 遮罩用）
 
   @override
   void didUpdateWidget(covariant MePage oldWidget) {
@@ -64,6 +68,7 @@ class _MePageState extends State<MePage> {
         .toList();
     final hc = hiddenTabs.length;
     return Scaffold(
+      backgroundColor: Colors.transparent,
       body: SafeArea(
         bottom: false,
         child: ListView(
@@ -168,8 +173,29 @@ class _MePageState extends State<MePage> {
                       ),
                     ),
                     StaggeredEntrance(
-                      key: ValueKey('${_session}_4'),
+                      key: ValueKey('${_session}_theme_style'),
                       index: 3,
+                      child: SizedBox(
+                        width: itemWidth,
+                        child: ListenableBuilder(
+                          listenable: SettingsService(),
+                          builder: (context, _) {
+                            return _buildMenuItem(
+                              isDark,
+                              icon: Icons.palette_rounded,
+                              iconBg: JellyTheme.primary,
+                              title: '主题风格',
+                              subtitle:
+                                  '当前：${SettingsService().currentThemeInfo.name}',
+                              onTap: _showThemePresetSheet,
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                    StaggeredEntrance(
+                      key: ValueKey('${_session}_4'),
+                      index: 4,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -189,7 +215,7 @@ class _MePageState extends State<MePage> {
                     ),
                     StaggeredEntrance(
                       key: ValueKey('${_session}_5'),
-                      index: 4,
+                      index: 5,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -210,7 +236,7 @@ class _MePageState extends State<MePage> {
                     // 漫画源仓库（启用/禁用源 + 云端配置）
                     StaggeredEntrance(
                       key: ValueKey('${_session}_source_repo'),
-                      index: 5,
+                      index: 6,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -230,7 +256,7 @@ class _MePageState extends State<MePage> {
                     ),
                     StaggeredEntrance(
                       key: ValueKey('${_session}_2'),
-                      index: 6,
+                      index: 7,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -250,7 +276,7 @@ class _MePageState extends State<MePage> {
                     ),
                     StaggeredEntrance(
                       key: ValueKey('${_session}_download_record'),
-                      index: 7,
+                      index: 8,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -271,13 +297,33 @@ class _MePageState extends State<MePage> {
                         ),
                       ),
                     ),
+                    StaggeredEntrance(
+                      key: ValueKey('${_session}_browse_history'),
+                      index: 9,
+                      child: SizedBox(
+                        width: itemWidth,
+                        child: _buildMenuItem(
+                          isDark,
+                          icon: Icons.history_rounded,
+                          iconBg: JellyTheme.primary,
+                          title: '浏览记录',
+                          subtitle: '漫画 & 图书浏览历史',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const BrowseHistoryPage(),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                     // 被隐藏导航 tab 入口（导航栏关闭某 tab 时，依次补在"下载记录"下方）
                     for (var i = 0; i < hiddenTabs.length; i++)
                       StaggeredEntrance(
                         key: ValueKey(
                           '${_session}_hidden_${hiddenTabs[i].name}',
                         ),
-                        index: 8 + i,
+                        index: 9 + i,
                         child: SizedBox(
                           width: itemWidth,
                           child: _buildHiddenTabItem(isDark, hiddenTabs[i]),
@@ -285,7 +331,7 @@ class _MePageState extends State<MePage> {
                       ),
                     StaggeredEntrance(
                       key: ValueKey('${_session}_6'),
-                      index: 8 + hc,
+                      index: 9 + hc,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -300,7 +346,7 @@ class _MePageState extends State<MePage> {
                     ),
                     StaggeredEntrance(
                       key: ValueKey('${_session}_7'),
-                      index: 9 + hc,
+                      index: 10 + hc,
                       child: SizedBox(
                         width: itemWidth,
                         child: _buildMenuItem(
@@ -330,7 +376,7 @@ class _MePageState extends State<MePage> {
                 children: [
                   StaggeredEntrance(
                     key: ValueKey('${_session}_8'),
-                    index: 9 + hc,
+                    index: 10 + hc,
                     child: _buildQuickAction(
                       isDark
                           ? 'assets/icons/github_dark.png'
@@ -342,7 +388,7 @@ class _MePageState extends State<MePage> {
                   ),
                   StaggeredEntrance(
                     key: ValueKey('${_session}_9'),
-                    index: 10 + hc,
+                    index: 11 + hc,
                     child: _buildQuickAction(
                       'assets/icons/qq.png',
                       Icons.group_rounded,
@@ -352,7 +398,7 @@ class _MePageState extends State<MePage> {
                   ),
                   StaggeredEntrance(
                     key: ValueKey('${_session}_10'),
-                    index: 11 + hc,
+                    index: 12 + hc,
                     child: _buildQuickAction(
                       'assets/icons/tt-station.png',
                       Icons.language_rounded,
@@ -362,7 +408,7 @@ class _MePageState extends State<MePage> {
                   ),
                   StaggeredEntrance(
                     key: ValueKey('${_session}_11'),
-                    index: 12 + hc,
+                    index: 13 + hc,
                     child: _buildQuickAction(
                       'assets/icons/share.png',
                       Icons.share_rounded,
@@ -376,11 +422,11 @@ class _MePageState extends State<MePage> {
             const SizedBox(height: 12),
             StaggeredEntrance(
               key: ValueKey('${_session}_12'),
-              index: 13 + hc,
+              index: 14 + hc,
               child: Center(
                 child: Text(
                   '当前版本：${AppConstants.appName} V${AppConstants.version}',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     color: JellyTheme.textSecondary,
                   ),
@@ -396,8 +442,7 @@ class _MePageState extends State<MePage> {
 
   // -------------------- 暗色模式切换 --------------------
 
-  /// 右上角暗色模式图标：亮色显月亮、暗色显太阳
-  /// 优先用 assets/icons 下的彩色图标（sun.png/moon.png），缺省回退彩色 Material 图标
+  /// 右上角明暗模式切换图标：暗色显太阳、亮色显月亮（内置图标），颜色区分明暗
   Widget _buildThemeToggle(bool isDark) {
     return ListenableBuilder(
       listenable: SettingsService(),
@@ -430,17 +475,10 @@ class _MePageState extends State<MePage> {
               width: 38,
               height: 38,
               child: Center(
-                child: Image.asset(
-                  dark ? 'assets/icons/sun.png' : 'assets/icons/moon.png',
-                  width: 22,
-                  height: 22,
-                  errorBuilder: (_, _, _) => Icon(
-                    dark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
-                    size: 20,
-                    color: dark
-                        ? Colors.amber.shade600
-                        : Colors.indigo.shade400,
-                  ),
+                child: Icon(
+                  dark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
+                  size: 20,
+                  color: dark ? Colors.amber.shade600 : Colors.indigo.shade400,
                 ),
               ),
             ),
@@ -456,9 +494,8 @@ class _MePageState extends State<MePage> {
     showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(
-        child: CircularProgressIndicator(color: JellyTheme.primary),
-      ),
+      builder: (_) =>
+          Center(child: CircularProgressIndicator(color: JellyTheme.primary)),
     );
     final result = await UpdateService.check();
     if (!mounted) return;
@@ -486,9 +523,8 @@ class _MePageState extends State<MePage> {
       showDialog<void>(
         context: context,
         barrierDismissible: false,
-        builder: (_) => const Center(
-          child: CircularProgressIndicator(color: JellyTheme.primary),
-        ),
+        builder: (_) =>
+            Center(child: CircularProgressIndicator(color: JellyTheme.primary)),
       );
       try {
         final tmpDir = await getTemporaryDirectory();
@@ -587,10 +623,7 @@ class _MePageState extends State<MePage> {
             const SizedBox(height: 6),
             Text(
               label,
-              style: const TextStyle(
-                fontSize: 12,
-                color: JellyTheme.textSecondary,
-              ),
+              style: TextStyle(fontSize: 12, color: JellyTheme.textSecondary),
             ),
           ],
         ),
@@ -647,7 +680,7 @@ class _MePageState extends State<MePage> {
                     const SizedBox(height: 2),
                     Text(
                       subtitle,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 12,
                         color: JellyTheme.textSecondary,
                       ),
@@ -663,6 +696,411 @@ class _MePageState extends State<MePage> {
           ),
         ),
       ),
+    );
+  }
+
+  // -------------------- 主题风格选择 --------------------
+
+  /// 主题预设选择底部 sheet：3 套预设卡（名称 + 主色/强调色/背景色块），选中打勾
+  void _showThemePresetSheet() {
+    _switchingTo = null;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetCtx) {
+        return StatefulBuilder(
+          builder: (sheetCtx, setSheetState) {
+            final isDark = Theme.of(sheetCtx).brightness == Brightness.dark;
+            final switching = _switchingTo != null;
+            return ListenableBuilder(
+              listenable: SettingsService(),
+              builder: (sheetCtx, _) {
+                final current = SettingsService().themePreset;
+                return Stack(
+                  children: [
+                    Container(
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? JellyTheme.cardDark
+                            : JellyTheme.cardLight,
+                        borderRadius: const BorderRadius.vertical(
+                          top: Radius.circular(24),
+                        ),
+                      ),
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Center(
+                            child: Container(
+                              width: 36,
+                              height: 4,
+                              margin: const EdgeInsets.only(bottom: 12),
+                              decoration: BoxDecoration(
+                                color: isDark ? Colors.white24 : Colors.black12,
+                                borderRadius: BorderRadius.circular(2),
+                              ),
+                            ),
+                          ),
+                          Row(
+                            children: [
+                              Text(
+                                '主题风格',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                  color: isDark
+                                      ? Colors.white
+                                      : JellyTheme.textPrimaryLight,
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                '省电',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: isDark
+                                      ? Colors.white70
+                                      : Colors.black54,
+                                ),
+                              ),
+                              Transform.scale(
+                                scale: 0.75,
+                                child: Switch(
+                                  value: SettingsService().frameRateReduced,
+                                  onChanged: switching
+                                      ? null
+                                      : (v) => SettingsService()
+                                            .setFrameRateReduced(v),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                '动画',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: isDark
+                                      ? Colors.white70
+                                      : Colors.black54,
+                                ),
+                              ),
+                              Transform.scale(
+                                scale: 0.75,
+                                child: Switch(
+                                  value: SettingsService().backgroundAnimation,
+                                  onChanged: switching
+                                      ? null
+                                      : (v) => SettingsService()
+                                            .setBackgroundAnimation(v),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxHeight:
+                                  MediaQuery.of(sheetCtx).size.height * 0.55,
+                            ),
+                            child: SingleChildScrollView(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  ...themePresets.map(
+                                    (p) => _buildPresetCard(
+                                      p,
+                                      p.id == current,
+                                      isDark,
+                                      switching
+                                          ? null
+                                          : () async {
+                                              setSheetState(
+                                                () => _switchingTo = p.id,
+                                              );
+                                              await SettingsService()
+                                                  .setThemePreset(p.id);
+                                              // 等圆形揭示动画（截图+重建+扩散）完成，再收面板避免抢帧卡顿
+                                              await Future.delayed(
+                                                const Duration(
+                                                  milliseconds: 500,
+                                                ),
+                                              );
+                                              if (mounted)
+                                                Navigator.pop(context);
+                                            },
+                                    ),
+                                  ),
+                                  if (SettingsService().customThemes.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        4,
+                                        10,
+                                        4,
+                                        6,
+                                      ),
+                                      child: Text(
+                                        '我的自定义',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          color: JellyTheme.textSecondary,
+                                        ),
+                                      ),
+                                    ),
+                                  ...SettingsService().customThemes.map(
+                                    (t) => _buildPresetCard(
+                                      t,
+                                      t.id == current,
+                                      isDark,
+                                      switching
+                                          ? null
+                                          : () async {
+                                              setSheetState(
+                                                () => _switchingTo = t.id,
+                                              );
+                                              await SettingsService()
+                                                  .setThemePreset(t.id);
+                                              await Future.delayed(
+                                                const Duration(
+                                                  milliseconds: 500,
+                                                ),
+                                              );
+                                              if (mounted)
+                                                Navigator.pop(context);
+                                            },
+                                      deletable: true,
+                                      onDelete: () => _confirmDeleteCustom(t),
+                                      editable: true,
+                                      onEdit: () => _editCustom(t),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  _buildCreateThemeButton(isDark),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (switching)
+                      Positioned.fill(
+                        child: AbsorbPointer(
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: (isDark ? Colors.black : Colors.white)
+                                  .withValues(alpha: 0.45),
+                              borderRadius: const BorderRadius.vertical(
+                                top: Radius.circular(24),
+                              ),
+                            ),
+                            child: Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  CircularProgressIndicator(
+                                    color: JellyTheme.primary,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    '应用中...',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: isDark
+                                          ? Colors.white70
+                                          : JellyTheme.textPrimaryLight,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildPresetCard(
+    ThemePresetInfo preset,
+    bool selected,
+    bool isDark,
+    VoidCallback? onTap, {
+    bool deletable = false,
+    VoidCallback? onDelete,
+    bool editable = false,
+    VoidCallback? onEdit,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: selected
+            ? preset.palette.primary.withValues(alpha: 0.12)
+            : (isDark
+                  ? Colors.white.withValues(alpha: 0.04)
+                  : Colors.black.withValues(alpha: 0.03)),
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                ...[
+                  preset.palette.primary,
+                  preset.palette.accent,
+                  preset.palette.backgroundLight,
+                ].map(
+                  (c) => Container(
+                    width: 28,
+                    height: 28,
+                    margin: const EdgeInsets.only(right: 8),
+                    decoration: BoxDecoration(
+                      color: c,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.black12),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    preset.name,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: isDark
+                          ? Colors.white
+                          : JellyTheme.textPrimaryLight,
+                    ),
+                  ),
+                ),
+                if (editable && onEdit != null)
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: onEdit,
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 4, right: 2),
+                      child: Icon(
+                        Icons.edit_outlined,
+                        color: JellyTheme.textSecondary,
+                        size: 20,
+                      ),
+                    ),
+                  ),
+                if (deletable)
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: onDelete,
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 8, right: 6),
+                      child: Icon(
+                        Icons.close_rounded,
+                        color: JellyTheme.textSecondary,
+                        size: 20,
+                      ),
+                    ),
+                  ),
+                Icon(
+                  selected
+                      ? Icons.check_circle_rounded
+                      : Icons.radio_button_unchecked_rounded,
+                  color: selected
+                      ? preset.palette.primary
+                      : JellyTheme.textSecondary,
+                  size: 22,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 「新建自定义主题」按钮：跳转编辑器（保存后 addCustomTheme 已通知，sheet 自动刷新）
+  Widget _buildCreateThemeButton(bool isDark) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const CustomThemeEditorPage()),
+          ),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: JellyTheme.primary.withValues(alpha: 0.5),
+                width: 1.5,
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.add_rounded, color: JellyTheme.primary, size: 20),
+                const SizedBox(width: 6),
+                Text(
+                  '新建自定义主题',
+                  style: TextStyle(
+                    color: JellyTheme.primary,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 删除自定义主题二次确认；删的若是当前主题，deleteCustomTheme 会回退 jelly 并触发动画
+  Future<void> _confirmDeleteCustom(ThemePresetInfo t) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除主题'),
+        content: Text('确定删除「${t.name}」？此操作不可撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: JellyTheme.error),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await SettingsService().deleteCustomTheme(t.id);
+    }
+  }
+
+  /// 编辑自定义主题：打开编辑器（带 editing）。保存后 updateCustomTheme 通知，
+  /// sheet 的 ListenableBuilder 自动刷新；当前主题的改动即时生效。
+  void _editCustom(ThemePresetInfo t) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => CustomThemeEditorPage(editing: t)),
     );
   }
 
@@ -779,7 +1217,7 @@ class _MePageState extends State<MePage> {
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 12,
                       color: JellyTheme.textSecondary,
                     ),

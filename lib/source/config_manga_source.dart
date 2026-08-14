@@ -61,6 +61,17 @@ class ConfigMangaSource extends MangaSource {
     return site.url;
   }
 
+  /// 配置源章节级 Referer：章节 URL 非空时用章节页作 Referer，
+  /// 适配按具体页面校验防盗链的图床（如摸摸漫画 blob 站的 CDN）。
+  @override
+  String? refererForChapter(CChapter chapter) {
+    final chapterUrl = chapter.url;
+    if (chapterUrl != null && chapterUrl.isNotEmpty) {
+      return chapterUrl;
+    }
+    return referer;
+  }
+
   @override
   bool get chapterSortByOrder => site.chapterSortByOrder;
 
@@ -152,7 +163,11 @@ class ConfigMangaSource extends MangaSource {
     if (resultDom != null && resultDom.isNotEmpty) {
       for (final r in doc.querySelectorAll(resultDom)) {
         var title = _elText(r, site.searchTitleDom);
-        final href = _elAttr(r, site.searchMangaUrlDom, 'href') ?? '';
+        // searchMangaUrlDom 为空 = 列表项本身就是链接元素，直接取自身 href
+        final href = site.searchMangaUrlDom != null &&
+                site.searchMangaUrlDom!.isNotEmpty
+            ? (_elAttr(r, site.searchMangaUrlDom, 'href') ?? '')
+            : (r.attributes['href'] ?? '');
         if (title.isEmpty && href.isEmpty) continue;
         // 标题空时兜底用封面 img 的 alt（mycomic 卡标题仅在 alt）
         if (title.isEmpty &&
@@ -198,21 +213,23 @@ class ConfigMangaSource extends MangaSource {
       const MangasPage(items: [], hasNextPage: false);
 
   @override
-  bool get supportsCategories =>
-      site.categories != null && site.categories!.isNotEmpty;
+  bool get supportsCategories => site.normalizedCategoryGroups.isNotEmpty;
 
   @override
   Future<List<FilterGroup>> fetchCategories() async {
-    final cats = site.categories;
-    if (cats == null || cats.isEmpty) return const [];
-    return [
-      FilterGroup(
-        key: 'theme',
-        title: '题材',
-        options: cats,
-        selected: cats.first,
-      ),
-    ];
+    final groupsMap = site.normalizedCategoryGroups;
+    if (groupsMap.isEmpty) return const [];
+    final result = <FilterGroup>[];
+    groupsMap.forEach((key, options) {
+      if (options.isEmpty) return;
+      result.add(FilterGroup(
+        key: key,
+        title: site.categoryGroupTitle(key),
+        options: options,
+        selected: options.first,
+      ));
+    });
+    return result;
   }
 
   @override
@@ -220,27 +237,40 @@ class ConfigMangaSource extends MangaSource {
     List<FilterGroup> groups, {
     int page = 0,
   }) async {
-    final cats = site.categories;
-    if (cats == null || cats.isEmpty) {
+    final groupsMap = site.normalizedCategoryGroups;
+    if (groupsMap.isEmpty) {
       return const MangasPage(items: [], hasNextPage: false);
     }
-    // 提取 theme slug（selected 或默认第一个）
-    FilterGroup? themeGroup;
-    for (final g in groups) {
-      if (g.key == 'theme') {
-        themeGroup = g;
-        break;
+
+    // 按 key 收集选中值（没传的组取第一个默认值），同时兼容旧版 {slug} 占位
+    final values = <String, String>{};
+    for (final entry in groupsMap.entries) {
+      final key = entry.key;
+      final list = entry.value;
+      String? selected;
+      for (final g in groups) {
+        if (g.key == key) {
+          selected = g.selected?.value;
+          break;
+        }
       }
+      values[key] = selected ?? (list.isNotEmpty ? list.first.value : '');
     }
-    final slug = themeGroup?.selected?.value ?? cats.first.value;
+    // 旧版兼容：{slug} 等价于 {theme}
+    final slugVal = values['theme'] ?? values.values.first;
 
     // 拼 URL：page==0 用 categoryUrl，page>=1 用 categoryPageUrl（{page} 1-based）
     final urlTpl = page == 0 ? site.categoryUrl : site.categoryPageUrl;
     if (urlTpl == null) {
       return const MangasPage(items: [], hasNextPage: false);
     }
-    var url = urlTpl
-        .replaceAll('{slug}', slug)
+    String url = urlTpl; // urlTpl 已在上方 null 检查
+    // 替换所有 {key} 占位符
+    values.forEach((key, value) {
+      url = url.replaceAll('{$key}', value);
+    });
+    url = url
+        .replaceAll('{slug}', slugVal) // 旧版兼容
         .replaceAll('{page}', (page + site.categoryPageStart).toString());
     if (!url.startsWith('http')) url = _resolveUrl(url);
 
@@ -250,7 +280,11 @@ class ConfigMangaSource extends MangaSource {
     final listDom = site.categoryListDom;
     if (listDom != null && listDom.isNotEmpty) {
       for (final r in doc.querySelectorAll(listDom)) {
-        final href = _elAttr(r, site.categoryUrlDom, 'href') ?? '';
+        // categoryUrlDom 为空 = 列表项本身就是链接元素（如 <a class="comic">），直接取自身 href
+        final href = site.categoryUrlDom != null &&
+                site.categoryUrlDom!.isNotEmpty
+            ? (_elAttr(r, site.categoryUrlDom, 'href') ?? '')
+            : (r.attributes['href'] ?? '');
         if (href.isEmpty) continue;
         String cover = '';
         if (site.categoryCoverDom != null &&
@@ -295,7 +329,7 @@ class ConfigMangaSource extends MangaSource {
       hasNext = items.length >= site.categoryPageSize;
     }
     _log(
-      '分类[$slug] page=$page: ${items.length} 条, hasNext=$hasNext'
+      '分类[${values.values.join("/")}] page=$page: ${items.length} 条, hasNext=$hasNext'
       '${items.isNotEmpty ? ", 首封面: ${items.first.cover}" : ""}',
     );
     return MangasPage(items: items, hasNextPage: hasNext);
@@ -428,6 +462,27 @@ class ConfigMangaSource extends MangaSource {
         }
       }
     }
+    // 单行本兜底：无章节列表（如摸摸漫画单行本只有「开始阅读」按钮），
+    // 取配置的兜底按钮 href 作为唯一章节。
+    if (chapters.isEmpty && site.chapterFallbackLinkDom.isNotEmpty) {
+      final fb = doc.querySelector(site.chapterFallbackLinkDom);
+      final href = fb?.attributes['href'] ?? '';
+      if (href.isNotEmpty && !href.startsWith('javascript:')) {
+        final chapterUrl = _resolveUrl(href, detailUrl);
+        // 单行本只有一话，章节名固定为「第一话」（避免用按钮文字「开始阅读」）
+        chapters.add(
+          CChapter(
+            id: chapterUrl,
+            sourceId: id,
+            mangaId: manga.id,
+            name: '第一话',
+            url: chapterUrl,
+            order: 0,
+          ),
+        );
+        _log('单行本兜底章节: $chapterUrl');
+      }
+    }
     // chapterOrder: 0=倒序 1=正序（DOM 顺序按站点实际，按配置调整）
     if (site.chapterOrder == 0) {
       chapters.sort((a, b) => b.order.compareTo(a.order));
@@ -558,8 +613,8 @@ class ConfigMangaSource extends MangaSource {
   }
 
   /// 取图片真实 URL：依次试 src/data-src/data-original/data-lazy-src/data-url，
-  /// 跳过空值与 data: 占位（懒加载站 src 初始常为 1x1 透明占位，非空但不可用，
-  /// 故 ?? 链无效，必须显式跳过 data: 才能落到 data-src 等真实属性）。
+  /// 跳过空值、data: 占位与 blob:（blob 仅在 WebView 上下文有效，Dio 外不可加载；
+  /// 对应站需配置 useWebViewFetch 并由 WebViewImageFetcher 把真实地址写回 data-original）。
   String? _imgUrl(Element? img) {
     if (img == null) return null;
     for (final attr in const [
@@ -570,7 +625,12 @@ class ConfigMangaSource extends MangaSource {
       'data-url',
     ]) {
       final v = img.attributes[attr];
-      if (v != null && v.isNotEmpty && !v.startsWith('data:')) return v;
+      if (v != null &&
+          v.isNotEmpty &&
+          !v.startsWith('data:') &&
+          !v.startsWith('blob:')) {
+        return v;
+      }
     }
     return img.attributes['src']; // 全占位/空时回退 src，保留原行为兜底
   }

@@ -8,10 +8,13 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/bookshelf.dart';
 import '../models/comic.dart';
+import '../models/trim_preset.dart';
 import 'bookshelf_service.dart';
 import 'settings_service.dart';
+import 'trim_service.dart';
 import '../source/models.dart';
 import '../source/source_manager.dart';
+import '../utils/app_toast.dart';
 
 /// 日志工具
 void _log(String message) {
@@ -50,12 +53,19 @@ class DownloadTask {
   String? error;
   int? downloadedAt; // 完成时间戳（ms）
   String? epubPath; // 合并生成的 EPUB 文件路径（持久化）
+  String? trimParamsJson; // 去白边参数 JSON（持久化，null 表示不应用去白边）
 
   /// 运行时取消令牌（不持久化）
   CancelToken? cancelToken;
 
   /// 续传标记（运行时，不持久化）：true 时跳过已下载图片接着下，不重置进度
   bool resumeMode = false;
+
+  /// 所属下载批次 id（运行时，不持久化）：用于"本轮所选章节全部完成"的批次通知
+  String? batchId;
+
+  /// 运行时标记：是否启用去白边（等价于 trimParamsJson != null，方便判断）
+  bool get trimEnabled => trimParamsJson != null;
 
   DownloadTask({
     required this.key,
@@ -76,6 +86,7 @@ class DownloadTask {
     this.error,
     this.downloadedAt,
     this.epubPath,
+    this.trimParamsJson,
   });
 
   factory DownloadTask.fromJson(Map<String, dynamic> j) {
@@ -102,6 +113,7 @@ class DownloadTask {
       missingImages: j['missingImages'] as int? ?? 0,
       downloadedAt: j['downloadedAt'] as int?,
       epubPath: j['epubPath'] as String?,
+      trimParamsJson: j['trimParamsJson'] as String?,
     );
   }
 
@@ -120,11 +132,22 @@ class DownloadTask {
     'missingImages': missingImages,
     'downloadedAt': downloadedAt,
     'epubPath': epubPath,
+    'trimParamsJson': trimParamsJson,
   };
 }
 
 /// 下载服务（队列 + 两级并发 + 本地持久化）
 /// 单例 + ChangeNotifier，UI 用 ListenableBuilder 监听变化。
+/// 下载批次（运行时，不持久化）：追踪一次 downloadChapters 调用所选章节的完成情况。
+class _DownloadBatch {
+  _DownloadBatch({required this.title, required this.pendingKeys});
+
+  final String title; // 漫画标题
+  final Set<String> pendingKeys; // 本批新增、尚未终态的 task key
+  int ok = 0; // 完成数
+  int fail = 0; // 失败数
+}
+
 class DownloadService extends ChangeNotifier {
   DownloadService._();
   static final DownloadService _instance = DownloadService._();
@@ -157,6 +180,9 @@ class DownloadService extends ChangeNotifier {
 
   /// 已下载章节快速查询：pathWord -> {chapterId...}（从记录重建）
   final Map<String, Set<String>> _downloaded = {};
+
+  /// 下载批次：batchId -> 批次（运行时，不持久化）。用于"本轮所选章节全部结束"通知。
+  final Map<String, _DownloadBatch> _batches = {};
 
   /// 图片下载请求头改由当前漫画源提供（imageHeaders + referer），见 [_downloadOne]。
 
@@ -384,11 +410,23 @@ class DownloadService extends ChangeNotifier {
   }
 
   /// 加入下载队列（立即返回，不阻塞）。已下载/已在队列的跳过。
-  void downloadChapters(Comic comic, List<ComicChapter> chapters) {
+  ///
+  /// [trimParams] 不为 null 时，下载完成后对图片执行去白边处理。
+  void downloadChapters(
+    Comic comic,
+    List<ComicChapter> chapters, {
+    TrimParams? trimParams,
+  }) {
     // 用漫画自身所属源（详情页 _comic 带 sourceId）；旧数据无则回退当前源
     final sourceId = (comic.sourceId != null && comic.sourceId!.isNotEmpty)
         ? comic.sourceId!
         : SourceManager().current.id;
+    final trimJson = trimParams != null
+        ? jsonEncode(trimParams.toJson())
+        : null;
+    // 本轮批次：仅把"实际新增"的章节纳入批次完成通知（已下载/已在队列的跳过）
+    final batchId = 'b${DateTime.now().microsecondsSinceEpoch}';
+    final addedKeys = <String>[];
     var added = 0;
     for (final chapter in chapters) {
       if (isChapterDownloaded(comic.pathWord, chapter.id)) continue;
@@ -411,13 +449,47 @@ class DownloadService extends ChangeNotifier {
         chapterTitle: chapter.title,
         chapterOrder: chapter.order,
         status: DownloadStatus.queued,
-      );
+        trimParamsJson: trimJson,
+      )..batchId = batchId;
+      addedKeys.add(key);
       added++;
     }
     if (added > 0) {
+      _batches[batchId] = _DownloadBatch(
+        title: comic.title,
+        pendingKeys: addedKeys.toSet(),
+      );
       notifyListeners();
       _persist(); // 立即持久化排队任务，退出软件不丢
       _schedule();
+    }
+  }
+
+  /// 单个任务进入终态（completed/failed）或被取消时，更新所属批次的完成进度；
+  /// 批次内全部 key 结束则弹一次气泡（全取消则静默）。
+  void _onTaskTerminal(DownloadTask task) {
+    final id = task.batchId;
+    if (id == null) return;
+    final b = _batches[id];
+    if (b == null) return; // 批次已报过/app 重启后丢失 -> 忽略
+    // remove 返回 false 说明该 key 已处理过（如对已终态任务再操作），忽略以防重复计数
+    if (!b.pendingKeys.remove(task.key)) return;
+    if (task.status == DownloadStatus.completed) {
+      b.ok++;
+    } else if (task.status == DownloadStatus.failed) {
+      b.fail++;
+    }
+    if (b.pendingKeys.isEmpty) {
+      _batches.remove(id);
+      if (b.ok == 0 && b.fail == 0) return; // 全取消 -> 静默
+      final name = '「${b.title}」';
+      if (b.fail == 0) {
+        AppToast.show(name, '${b.ok} 话下载成功');
+      } else if (b.ok == 0) {
+        AppToast.show(name, '${b.fail} 话下载失败', isError: true);
+      } else {
+        AppToast.show(name, '成功 ${b.ok} 话，失败 ${b.fail} 话', isError: true);
+      }
     }
   }
 
@@ -471,7 +543,7 @@ class DownloadService extends ChangeNotifier {
       final urls = await source.getChapterImages(cmanga, cchapter);
       _log(
         '取图 ${task.chapterTitle}: ${urls.length} 张'
-        '${urls.isNotEmpty ? ', 首=${urls.first}' : ''}',
+        '${urls.isNotEmpty ? ', 首=${_safeUrlPreview(urls.first)}' : ''}',
       );
       // 图片下载头用源提供的 UA + Referer（多源图床校验不同）
       final headers = <String, dynamic>{...source.imageHeaders};
@@ -538,6 +610,7 @@ class DownloadService extends ChangeNotifier {
         task.error = '图片下载失败';
         _schedulePersist();
         notifyListeners();
+        _onTaskTerminal(task);
         _log('章节下载失败（无图片）: ${task.chapterTitle}');
         return;
       }
@@ -562,18 +635,23 @@ class DownloadService extends ChangeNotifier {
         BookshelfItemType.comic,
         meta: jsonEncode(snapshot.toJson()),
       );
+      // 去白边处理（若开启）
+      if (task.trimEnabled) {
+        try {
+          final trimmed = await _trimChapterImages(task, dir);
+          _log('去白边处理完成: ${task.chapterTitle}，处理了 $trimmed 张');
+        } catch (e) {
+          _log('去白边处理失败: ${task.chapterTitle} - $e');
+          // 去白边失败不影响下载完成状态，保留原图
+        }
+      }
       // 合并 EPUB（若开启）
       if (SettingsService().mergeChapterToEpub) {
-        final epub = await _mergeChapterToEpub(task, dir);
-        if (epub != null) {
-          task.epubPath = epub;
-          if (!SettingsService().keepImagesAfterEpub) {
-            await _deleteChapterImages(dir);
-          }
-        }
+        await _tryMergeEpubGroup(task);
       }
       _schedulePersist();
       notifyListeners();
+      _onTaskTerminal(task);
       _log(
         '章节下载完成: ${task.chapterTitle} '
         '(${task.downloadedImages}/${task.totalImages} 张'
@@ -586,6 +664,7 @@ class DownloadService extends ChangeNotifier {
       task.error = e.toString();
       _schedulePersist();
       notifyListeners();
+      _onTaskTerminal(task);
       _log('章节下载失败: ${task.chapterTitle} - $e');
     }
   }
@@ -630,42 +709,79 @@ class DownloadService extends ChangeNotifier {
       final i = pending[next++];
       final fileName = '${(i + 1).toString().padLeft(3, '0')}.jpg';
       final file = File('${dir.path}/$fileName');
-      _imageDio
-          .download(
-            urls[i],
-            file.path,
-            options: Options(headers: headers),
-            cancelToken: task.cancelToken,
-          )
-          .then((_) {
-            done++;
-            task.downloadedImages = alreadyDone + done;
-            task.progress = (alreadyDone + done + failedCount) / total;
-            _notifyProgress();
-            startOne();
-          })
-          .catchError((e) {
-            // 用户取消：终止整章（交由 _downloadOne 的 catch 静默处理）
-            final isCancel =
-                e is DioException && e.type == DioExceptionType.cancel;
-            if (isCancel) {
-              if (!completer.isCompleted) completer.completeError(e);
-              return;
-            }
-            // 超时/网络错误：跳过单张，继续下载其余
-            failedCount++;
-            _log(
-              '单张失败[${task.chapterTitle}] #${i + 1}/${urls.length} '
-              '${urls[i]}: $e',
-            );
-            task.missingImages = failedCount;
-            try {
-              if (file.existsSync()) file.deleteSync();
-            } catch (_) {}
-            task.progress = (alreadyDone + done + failedCount) / total;
-            _notifyProgress();
-            startOne();
-          });
+      final url = urls[i];
+      // file:// 路径（blob 站落盘临时文件）直接 copy，不走 HTTP
+      if (url.startsWith('file://') || !url.contains('://')) {
+        final srcPath = url.startsWith('file://')
+            ? Uri.parse(url).toFilePath()
+            : url;
+        File(srcPath).copy(file.path).then((_) {
+          done++;
+          task.downloadedImages = alreadyDone + done;
+          task.progress = (alreadyDone + done + failedCount) / total;
+          _notifyProgress();
+          startOne();
+        }).catchError((e) {
+          failedCount++;
+          task.missingImages = failedCount;
+          task.progress = (alreadyDone + done + failedCount) / total;
+          _log('临时文件复制失败 $fileName: $e');
+          _notifyProgress();
+          startOne();
+        });
+      } else if (url.startsWith('data:')) {
+        _saveDataUrl(url, file).then((_) {
+          done++;
+          task.downloadedImages = alreadyDone + done;
+          task.progress = (alreadyDone + done + failedCount) / total;
+          _notifyProgress();
+          startOne();
+        }).catchError((e) {
+          failedCount++;
+          task.missingImages = failedCount;
+          task.progress = (alreadyDone + done + failedCount) / total;
+          _log('data 图片保存失败 $fileName: $e');
+          _notifyProgress();
+          startOne();
+        });
+      } else {
+        _imageDio
+            .download(
+              url,
+              file.path,
+              options: Options(headers: headers),
+              cancelToken: task.cancelToken,
+            )
+            .then((_) {
+              done++;
+              task.downloadedImages = alreadyDone + done;
+              task.progress = (alreadyDone + done + failedCount) / total;
+              _notifyProgress();
+              startOne();
+            })
+            .catchError((e) {
+              // 用户取消：终止整章（交由 _downloadOne 的 catch 静默处理）
+              final isCancel =
+                  e is DioException && e.type == DioExceptionType.cancel;
+              if (isCancel) {
+                if (!completer.isCompleted) completer.completeError(e);
+                return;
+              }
+              // 超时/网络错误：跳过单张，继续下载其余
+              failedCount++;
+              _log(
+                '单张失败[${task.chapterTitle}] #${i + 1}/${urls.length} '
+                '${urls[i]}: $e',
+              );
+              task.missingImages = failedCount;
+              try {
+                if (file.existsSync()) file.deleteSync();
+              } catch (_) {}
+              task.progress = (alreadyDone + done + failedCount) / total;
+              _notifyProgress();
+              startOne();
+            });
+      }
     }
 
     final initial = concurrency < pending.length ? concurrency : pending.length;
@@ -673,6 +789,28 @@ class DownloadService extends ChangeNotifier {
       startOne();
     }
     await completer.future;
+  }
+
+  /// 把 data: URL（base64）解码后写入文件。
+  /// 用于 blob 站（如摸摸漫画）取图返回 data URL 的场景，跳过 HTTP 下载。
+  Future<void> _saveDataUrl(String dataUrl, File file) async {
+    final commaIdx = dataUrl.indexOf(',');
+    if (commaIdx < 0) throw FormatException('无效的 data URL');
+    final data = dataUrl.substring(commaIdx + 1);
+    final bytes = base64.decode(data);
+    await file.writeAsBytes(bytes, flush: true);
+  }
+
+  /// 日志用：URL 预览，data: base64 只打类型+大小，避免刷屏。
+  String _safeUrlPreview(String url) {
+    if (url.startsWith('file://')) return Uri.parse(url).toFilePath();
+    if (url.startsWith('data:')) {
+      final commaIdx = url.indexOf(',');
+      final prefix = commaIdx > 0 ? url.substring(0, commaIdx) : 'data:';
+      final bytesLen = ((url.length - commaIdx - 1) * 3 / 4).round();
+      return '$prefix (~${bytesLen ~/ 1024}KB)';
+    }
+    return url.length > 120 ? '${url.substring(0, 120)}...' : url;
   }
 
   /// 重试失败任务
@@ -715,6 +853,9 @@ class DownloadService extends ChangeNotifier {
         task.status == DownloadStatus.paused ||
         task.status == DownloadStatus.completed;
     task.cancelToken?.cancel();
+    // 取消的任务从 _tasks 移除、永不进入 completed/failed，需手动从批次剔除，
+    // 否则批次会因 pendingKey 残留而永不触发完成通知
+    _onTaskTerminal(task);
     _tasks.remove(key);
     if (needPersist) _persist();
     notifyListeners();
@@ -973,71 +1114,184 @@ class DownloadService extends ChangeNotifier {
     }
   }
 
-  /// 删除章节目录下的图片（合并 EPUB 后不保留图片时调用）
+  /// 删除整个章节目录（合并 EPUB 后不保留图片时调用）
   Future<void> _deleteChapterImages(Directory dir) async {
     try {
-      for (final f in dir.listSync().whereType<File>()) {
-        final name = f.path.split(RegExp(r'[/\\]')).last;
-        if (RegExp(r'^\d+\.jpg$').hasMatch(name)) {
-          await f.delete();
-        }
+      if (await dir.exists()) {
+        await dir.delete(recursive: true);
       }
     } catch (e) {
-      _log('删除章节图片失败: $e');
+      _log('删除章节目录失败: $e');
     }
   }
 
-  /// 将章节图片合并为 EPUB（每章一个）。成功返回 EPUB 路径，失败返回 null。
-  /// EPUB 输出到独立的 epub/ 子目录，避免被 getLocalImages 误当图片读取。
-  Future<String?> _mergeChapterToEpub(
-    DownloadTask task,
-    Directory imageDir,
-  ) async {
+  /// 对单章下载的图片执行去白边处理
+  ///
+  /// 在 worker isolate 中批量处理，返回处理过的图片数量。
+  /// 通过章节目录下的 .trimmed 标记文件防止重复处理。
+  Future<int> _trimChapterImages(DownloadTask task, Directory dir) async {
+    if (task.trimParamsJson == null) return 0;
+
+    // 检查标记文件，避免重复处理
+    final marker = File('${dir.path}/.trimmed');
+    if (await marker.exists()) {
+      _log('去白边已处理过，跳过: ${task.chapterTitle}');
+      return 0;
+    }
+
+    final params = TrimParams.fromJson(jsonDecode(task.trimParamsJson!));
+    final processed = await compute(
+      _trimChapterInIsolate,
+      _TrimChapterRequest(dir.path, params),
+    );
+
+    // 写标记文件
     try {
-      // 收集并按序号排序的图片
-      final images = <int, File>{};
-      for (final f in imageDir.listSync().whereType<File>()) {
-        final name = f.path.split(RegExp(r'[/\\]')).last;
-        final m = RegExp(r'^(\d+)\.jpg$').firstMatch(name);
-        if (m != null) {
-          images[int.parse(m.group(1)!)] = f;
+      await marker.writeAsString(
+        '${DateTime.now().millisecondsSinceEpoch}\n'
+        'threshold=${params.threshold}\n'
+        'padding=${params.padding}\n'
+        'zoom=${params.zoom}\n'
+        'device=${params.deviceWidth}x${params.deviceHeight}\n',
+      );
+    } catch (_) {}
+
+    return processed;
+  }
+
+  /// 尝试将同一漫画下已完成且尚未合并的章节凑组合并为 EPUB。
+  /// 凑够 mergeChaptersPerEpub 话就合并一组；若该漫画没有进行中的任务了，
+  /// 剩余不足 N 话的也自动收尾合并。
+  Future<void> _tryMergeEpubGroup(DownloadTask justFinished) async {
+    final perGroup = SettingsService().mergeChaptersPerEpub;
+    final comicKey = justFinished.comicPathWord;
+
+    // 收集该漫画下所有已完成且尚未合并的任务，按 chapterOrder 正序
+    final pending = <DownloadTask>[];
+    var hasActive = false;
+    for (final t in _tasks.values) {
+      if (t.comicPathWord != comicKey) continue;
+      if (t.status == DownloadStatus.completed &&
+          (t.epubPath == null || t.epubPath!.isEmpty)) {
+        pending.add(t);
+      } else if (t.status == DownloadStatus.queued ||
+          t.status == DownloadStatus.downloading) {
+        hasActive = true;
+      }
+    }
+    // 按 chapterOrder 正序排列（第1话在前）
+    pending.sort((a, b) => a.chapterOrder.compareTo(b.chapterOrder));
+
+    if (pending.isEmpty) return;
+
+    // 需要合并的组数：凑够 N 的立即合并；剩余不足 N 的如果没有进行中任务也合并
+    final groupCount = hasActive
+        ? pending.length ~/ perGroup
+        : (pending.length / perGroup).ceil();
+    if (groupCount == 0) return;
+
+    for (var g = 0; g < groupCount; g++) {
+      final start = g * perGroup;
+      final end = (g + 1) * perGroup > pending.length
+          ? pending.length
+          : (g + 1) * perGroup;
+      final group = pending.sublist(start, end);
+      final dirs = <Directory>[];
+      for (final t in group) {
+        dirs.add(await _chapterDir(t.comicPathWord, t.comicTitle, t.chapterId));
+      }
+      final epub = await _mergeChaptersToEpub(group, dirs);
+      if (epub != null) {
+        for (final t in group) {
+          t.epubPath = epub;
+        }
+        if (!SettingsService().keepImagesAfterEpub) {
+          for (final d in dirs) {
+            await _deleteChapterImages(d);
+          }
+        }
+        _log(
+          '已合并 ${group.length} 话为 EPUB: '
+          '${group.first.chapterTitle} ~ ${group.last.chapterTitle}',
+        );
+      }
+    }
+  }
+
+  /// 将多章图片合并为一个 EPUB。成功返回 EPUB 路径，失败返回 null。
+  /// 章节按传入顺序排列，所有图片按「话内页序」依次拼接。
+  Future<String?> _mergeChaptersToEpub(
+    List<DownloadTask> tasks,
+    List<Directory> dirs,
+  ) async {
+    if (tasks.isEmpty || dirs.isEmpty || tasks.length != dirs.length) {
+      return null;
+    }
+    try {
+      // 收集所有图片：按章节顺序 + 章内序号排序，全局页码从 1 开始
+      final allImagePaths = <String>[];
+      for (var i = 0; i < tasks.length; i++) {
+        final images = <int, File>{};
+        for (final f in dirs[i].listSync().whereType<File>()) {
+          final name = f.path.split(RegExp(r'[/\\]')).last;
+          final m = RegExp(r'^(\d+)\.jpg$').firstMatch(name);
+          if (m != null) {
+            images[int.parse(m.group(1)!)] = f;
+          }
+        }
+        final sortedKeys = images.keys.toList()..sort();
+        for (final k in sortedKeys) {
+          allImagePaths.add(images[k]!.path);
         }
       }
-      if (images.isEmpty) return null;
-      final sortedKeys = images.keys.toList()..sort();
-      final pages = sortedKeys.length;
-      final imagePaths = [for (final k in sortedKeys) images[k]!.path];
+      if (allImagePaths.isEmpty) return null;
+      final pages = allImagePaths.length;
 
+      final firstTask = tasks.first;
+      final lastTask = tasks.last;
       final base = await SettingsService.downloadBaseDir();
       final epubDir = Directory(
-        '${base.path}/Comics/${_comicDirName(task.comicPathWord, task.comicTitle)}/epub',
+        '${base.path}/Comics/${_comicDirName(firstTask.comicPathWord, firstTask.comicTitle)}/epub',
       );
       if (!await epubDir.exists()) {
         await epubDir.create(recursive: true);
       }
       final safeComic = _sanitizeEpubName(
-        task.comicTitle.isEmpty ? task.comicPathWord : task.comicTitle,
+        firstTask.comicTitle.isEmpty
+            ? firstTask.comicPathWord
+            : firstTask.comicTitle,
         maxLen: 40,
       );
-      final safeChapter = _sanitizeEpubName(
-        task.chapterTitle.isEmpty ? task.chapterId : task.chapterTitle,
-        maxLen: 40,
+      final safeStart = _sanitizeEpubName(
+        firstTask.chapterTitle.isEmpty
+            ? firstTask.chapterId
+            : firstTask.chapterTitle,
+        maxLen: 30,
       );
-      // 追加净化后 chapterId 末段：URL 形式取文件名段（来漫画 28140002.html），
-      // 短 id 原样；防重名且避免 :// 非法字符。
-      final sid = _sanitizeChapterId(task.chapterId);
+      final safeEnd = _sanitizeEpubName(
+        lastTask.chapterTitle.isEmpty
+            ? lastTask.chapterId
+            : lastTask.chapterTitle,
+        maxLen: 30,
+      );
+      // 多话合并时文件名用「起始话-结束话」；单话时与原格式一致
+      final chapterLabel = tasks.length == 1
+          ? safeStart
+          : '$safeStart-$safeEnd';
+      final sid = _sanitizeChapterId(firstTask.chapterId);
       final lastSep = sid.lastIndexOf('_');
       final shortChapterId = lastSep >= 0 ? sid.substring(lastSep + 1) : sid;
       final epubPath =
-          '${epubDir.path}/${safeComic}_${safeChapter}_$shortChapterId.epub';
+          '${epubDir.path}/${safeComic}_${chapterLabel}_$shortChapterId.epub';
 
-      final bookId = 'cmbok-${task.comicPathWord}-$sid';
-      final title = task.chapterTitle.isEmpty
-          ? task.comicTitle
-          : task.chapterTitle;
+      final bookId = 'cmbok-${firstTask.comicPathWord}-$sid';
+      final title = tasks.length == 1
+          ? (firstTask.chapterTitle.isEmpty
+                ? firstTask.comicTitle
+                : firstTask.chapterTitle)
+          : '${firstTask.chapterTitle} ~ ${lastTask.chapterTitle}';
 
-      // 预生成 XML（轻量字符串拼接，主线程）；zip 压缩等重活交 worker isolate，
-      // 避免 ZipEncoder().encode 阻塞主线程导致大批量下载卡死。
+      // 预生成 XML（轻量字符串拼接，主线程）；zip 压缩等重活交 worker isolate
       final pageXhtmls = <String>[];
       for (var i = 1; i <= pages; i++) {
         pageXhtmls.add(_epubPageXhtml(i));
@@ -1045,19 +1299,23 @@ class DownloadService extends ChangeNotifier {
       final epub = await compute(
         _buildEpubInIsolate,
         _EpubBuildRequest(
-          imagePaths: imagePaths,
+          imagePaths: allImagePaths,
           epubPath: epubPath,
           containerXml: _epubContainerXml(),
-          contentOpfXml: _epubContentOpf(title, task.comicTitle, bookId, pages),
+          contentOpfXml: _epubContentOpf(
+            title,
+            firstTask.comicTitle,
+            bookId,
+            pages,
+          ),
           tocNcxXml: _epubTocNcx(title, bookId, pages),
           pageXhtmls: pageXhtmls,
         ),
       );
       if (epub == null) return null;
-      _log('已合并 EPUB: ${task.chapterTitle} ($pages 页) -> $epubPath');
       return epub;
     } catch (e) {
-      _log('合并 EPUB 失败: ${task.chapterTitle} - $e');
+      _log('合并多章EPUB失败: ${tasks.map((t) => t.chapterTitle).join(", ")} - $e');
       return null;
     }
   }
@@ -1207,4 +1465,20 @@ Future<String?> _buildEpubInIsolate(_EpubBuildRequest req) async {
     _log('worker isolate 合并 EPUB 失败: $e');
     return null;
   }
+}
+
+// ============================================================
+// 去白边 isolate 入口（顶层函数，供 compute 调用）
+// ============================================================
+
+/// 去白边 isolate 请求
+class _TrimChapterRequest {
+  final String dirPath;
+  final TrimParams params;
+  const _TrimChapterRequest(this.dirPath, this.params);
+}
+
+/// Worker isolate 中批量处理单章图片去白边
+Future<int> _trimChapterInIsolate(_TrimChapterRequest req) async {
+  return processTrimDirectory(req.dirPath, req.params);
 }

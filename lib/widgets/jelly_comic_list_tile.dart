@@ -149,9 +149,10 @@ class _JellyComicListTileState extends State<JellyComicListTile>
                       CachedNetworkImage(
                         imageUrl: comic.cover,
                         fit: BoxFit.cover,
+                        memCacheWidth: 300,
                         placeholder: (context, url) => Container(
                           color: isDark ? Colors.grey[800] : Colors.grey[200],
-                          child: const Center(
+                          child: Center(
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
                               color: JellyTheme.primary,
@@ -247,7 +248,7 @@ class _JellyComicListTileState extends State<JellyComicListTile>
                                 ),
                                 child: Text(
                                   comic.author!,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 11,
                                     color: JellyTheme.primary,
                                     fontWeight: FontWeight.w500,

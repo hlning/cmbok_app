@@ -9,12 +9,13 @@ import 'package:kindle_unpack/kindle_unpack.dart';
 import 'package:xml/xml.dart';
 
 import '../models/book_content.dart';
+import '../services/gbk_fast.dart';
 import '../services/platform_service.dart';
 
 /// 解析 EPUB / MOBI / TXT 为 [BookContent]。
 /// - EPUB：archive 解 zip + xml 解 container.xml / OPF / XHTML（含 NAV/NCX 目录）。
 /// - MOBI/AZW/AZW3：[KindleBook] 转 EPUB 字节后复用 EPUB 解析（kindle_unpack，GPL v3）。
-/// - TXT：UTF-8 优先，回退系统编码（Windows 中文为 GBK），再回退容错 UTF-8。
+/// - TXT：UTF-8 优先，回退 GBK（中文 TXT 主流编码），再回退容错 UTF-8。
 class BookParser {
   BookParser._();
 
@@ -324,28 +325,31 @@ class BookParser {
     return book.images.cover?.data;
   }
 
-  /// 解析 TXT 文件。
-  static Future<BookContent> parseTxt(File file) async {
-    final bytes = await file.readAsBytes();
-    String text;
+  /// 解码 TXT 字节（须在后台 isolate 调用：gbk 表首次访问才惰性构建）。
+  /// 用 [decodeGbk]（O(n) 平铺表）而非 gbk_bytes.decode（O(n²) 逐字拼接）。
+  static String decodeTxtBytes(Uint8List bytes) {
     try {
-      text = utf8.decode(bytes, allowMalformed: false);
+      return utf8.decode(bytes, allowMalformed: false);
     } catch (_) {
       try {
-        text = systemEncoding.decode(bytes);
+        // GBK/GB2312 是中文 TXT 最常见编码；Android/iOS 的 systemEncoding 是
+        // UTF-8，无法兜底 GBK，故显式用快速 GBK 解码。
+        return decodeGbk(bytes);
       } catch (_) {
-        text = utf8.decode(bytes, allowMalformed: true);
+        return utf8.decode(bytes, allowMalformed: true);
       }
     }
+  }
+
+  /// 从已解码文本构建 [BookContent]（可在后台 isolate 中运行，不碰 gbk 表）。
+  static BookContent buildTxtContent((String text, String title) args) {
+    final (text, title) = args;
     // 一行一段（中文 TXT 主流格式）；空行跳过；去首尾空白（含全角空格缩进）
     final blocks = <BookBlock>[];
     for (final line in text.split(RegExp(r'\r\n|\r|\n'))) {
       final t = line.trim();
       if (t.isNotEmpty) blocks.add(ParagraphBlock(t));
     }
-    final title = file.uri.pathSegments.isNotEmpty
-        ? file.uri.pathSegments.last
-        : '未命名';
     return BookContent(
       title: title,
       chapters: [BookChapter(title: title, blocks: blocks)],

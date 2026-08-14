@@ -34,7 +34,7 @@ class AboutPage extends StatelessWidget {
                       width: 72,
                       height: 72,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => const Icon(
+                      errorBuilder: (_, _, _) => Icon(
                         Icons.auto_stories_rounded,
                         size: 40,
                         color: JellyTheme.primary,

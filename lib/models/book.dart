@@ -16,6 +16,7 @@ class Book {
   final String? publisher;
   final double? interestScore;
   final String? identifier; // ISBN
+  final String? readOnlineUrl; // 在线阅读地址（z-library reader）
 
   const Book({
     required this.id,
@@ -32,6 +33,7 @@ class Book {
     this.publisher,
     this.interestScore,
     this.identifier,
+    this.readOnlineUrl,
   });
 
   /// 安全取字符串（z-library 返回的 id/year/pages 等可能是 int）
@@ -66,6 +68,7 @@ class Book {
       publisher: safeString(json['publisher']),
       interestScore: safeDouble(json['interestScore']),
       identifier: safeString(json['identifier']),
+      readOnlineUrl: safeString(json['readOnlineUrl']),
     );
   }
 
@@ -84,6 +87,7 @@ class Book {
     'publisher': publisher,
     'interestScore': interestScore,
     'identifier': identifier,
+    'readOnlineUrl': readOnlineUrl,
   };
 
   Book copyWith({
@@ -101,6 +105,7 @@ class Book {
     String? publisher,
     double? interestScore,
     String? identifier,
+    String? readOnlineUrl,
   }) {
     return Book(
       id: id ?? this.id,
@@ -117,6 +122,7 @@ class Book {
       publisher: publisher ?? this.publisher,
       interestScore: interestScore ?? this.interestScore,
       identifier: identifier ?? this.identifier,
+      readOnlineUrl: readOnlineUrl ?? this.readOnlineUrl,
     );
   }
 }
