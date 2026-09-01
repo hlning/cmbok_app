@@ -3,7 +3,5 @@
   {'name':'百度网盘','url':'https://pan.baidu.com/s/1-tYwegrQJtQ3VHVqNOxj1A?pwd=fds7'},
   {'name':'夸克网盘','url':'https://pan.quark.cn/s/c4d45ac3fb57#/list/share'},
   {'name':'迅雷网盘','url':'https://pan.xunlei.com/s/VOzYJzL8LuhuGwVIkywQBbtSA1?pwd=93na#'},
-  {'name':'UC网盘','url':'https://drive.uc.cn/s/00d2e8642f9d4'},
-  {'name':'阿里网盘','url':'https://www.alipan.com/s/CpzVKNu9YTK','show':false},
-  {'name':'123云盘','url':'https://1812475725.share.123pan.cn/123pan/GSy8Vv-DupEv','show':false}
+  {'name':'UC网盘','url':'https://drive.uc.cn/s/00d2e8642f9d4'}
 ]
