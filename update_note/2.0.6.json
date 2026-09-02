@@ -1,0 +1,19 @@
+{
+  "items": [
+    {
+      "image": "https://cmbok.oss-cn-beijing.aliyuncs.com/update_notes/2.0.6/Screenshot_2026-09-02-17-46-18-74_05d76c3ed3ccc06.jpg?Expires=1788342896&OSSAccessKeyId=TMP.3KtT9s2kTybp16XJXRWJuBAcbve9TrCVYurY4pY668BV88VXFPzqmx2HJDnZX23qpaV9okcxcsMvXjSATFD9kNsy5tHPqu&Signature=hgT5EH0IpRJTrXqVM5Wnkuw0ri8%3D",
+      "title": "听书引擎",
+      "text": "支持联网音色试听，长时朗读不再中断。"
+    },
+    {
+      "image": "https://cmbok.oss-cn-beijing.aliyuncs.com/update_notes/2.0.6/Screenshot_2026-09-02-17-46-31-62_05d76c3ed3ccc06.jpg?Expires=1788343062&OSSAccessKeyId=TMP.3KtT9s2kTybp16XJXRWJuBAcbve9TrCVYurY4pY668BV88VXFPzqmx2HJDnZX23qpaV9okcxcsMvXjSATFD9kNsy5tHPqu&Signature=P8Zz%2FZdjGC4X%2F5dEq8LKYWjUUAo%3D",
+      "title": "阅读计划",
+      "text": "支持自定义计划，通知；定制属于自己的阅读计划"
+    },
+    {
+      "image": "https://cmbok.oss-cn-beijing.aliyuncs.com/update_notes/2.0.6/Screenshot_2026-09-02-17-46-34-35_05d76c3ed3ccc06.jpg?Expires=1788343087&OSSAccessKeyId=TMP.3KtT9s2kTybp16XJXRWJuBAcbve9TrCVYurY4pY668BV88VXFPzqmx2HJDnZX23qpaV9okcxcsMvXjSATFD9kNsy5tHPqu&Signature=4V1apHCL9FtUgfDOOK%2Bx7jcgc%2BQ%3D",
+      "title": "阅读历程",
+      "text": "可详细看最近阅读记录，时间线，累计阅读时间"
+    }
+  ]
+}
