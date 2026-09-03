@@ -1,128 +1,146 @@
+<div align="center">
+
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/logo.png" width="96" alt="Cmbok">
+
 # Cmbok
 
-> 一款聚合漫画与图书的沉浸式下载阅读软件，支持仿真翻页、离线下载与阅读进度记忆。
+**你的下一款阅读软件，可以是 Cmbok**
 
-![Flutter](https://img.shields.io/badge/Flutter-3.10%2B-02569B?logo=flutter&logoColor=white)
-![Platform](https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&logoColor=white)
-![Version](https://img.shields.io/badge/Version-1.0.0-blue)
+漫画和图书双库合一：两套分开做的阅读器，共用一套书架、阅读进度和阅读历程。
+
+![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20iOS%20%7C%20Windows-3DDC84)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
+![Flutter](https://img.shields.io/badge/Flutter-3.10%2B-02569B?logo=flutter&logoColor=white)
+
+不用注册账号 · 无广告无内购 · 不收集使用数据 · MIT 开源
+
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/hero-desktop.jpg" width="800" alt="Cmbok 桌面版">
+
+</div>
 
 ---
 
-## ✨ 功能特性
+## 两套阅读器，一个书架
 
-- **漫画阅读**：支持搜索、详情、章节在线阅读
-- **图书阅读**：支持仿真翻页（卷曲动画）与普通翻页两种模式
-- **多种阅读模式**
-  - 漫画：翻页（左右翻页）/ 拼页（上下连续滚动）
-  - 图书：翻页 / 仿真翻页（圆柱卷曲动画）
-- **字体联动**：图书仿真模式自动使用水墨楷体，翻页模式使用系统字体，亦可手动切换
-- **收藏管理**：漫画与图书统一收藏，本地持久化保存
-- **离线下载**：章节批量下载，无网络也能阅读
-- **阅读进度**：自动记录续读位置，打开即续读
-- **果冻主题**：玻璃拟态 UI，支持明 / 暗模式
-- **自动更新**：启动时静默检查新版本，有更新即弹窗提醒
-- **首页公告**：重要通知以弹窗形式展示
+漫画竖着翻、图书按字排版，两边的阅读器是分开做的，不是一套凑合两用。但书架、收藏、阅读进度、浏览记录和阅读历程是同一套，找书不用分两处。
 
-## 📸 应用预览
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/shelf.jpg" width="720" alt="书架：漫画与图书混排">
 
-<div style="display:flex; gap:15px; flex-wrap:wrap; align-items:center;">
-  <img src="https://github.com/user-attachments/assets/e330a1a8-72cb-475f-afbf-4f1f102fdef9" height="200" />
-  <img src="https://github.com/user-attachments/assets/964c3852-ab59-407f-987a-13ff1e88a23d" height="200" />
-  <img src="https://github.com/user-attachments/assets/8fc72f3d-3f55-4ac6-a63a-32ece5cadd6c" height="200" />
-  <img src="https://github.com/user-attachments/assets/d37474ca-4cf2-479b-a36b-8518dd0e4a48" height="200" />
-  <img src="https://github.com/user-attachments/assets/41fc020a-f0be-4519-bbf6-5563e4a27927" height="200" />
-  <img src="https://github.com/user-attachments/assets/45bc5e67-2f1c-4451-982f-1595dc363979" height="200" />
-</div>
+## 阅读
 
-## 📱 下载安装
+翻页方式、字怎么排、纸什么颜色、屏幕点哪里翻页，都拆开到单项可调，调好还能存成预设。
 
-### 系统要求
+- **翻页 10 种**：图书五种（含 GPU 着色器的仿真翻页、上下连续滚动），漫画五种（从右往左、消散、拼页跨话连读等），横屏支持双页
+- **排版逐项可调**：字号字重行距段距字间距首行缩进各自独立，正文四边与页眉页脚边距分开算，整套设置存成预设
+- **纸与字**：四种底色、14 张内置背景图、自定义图片；字体指一个文件夹整批导入
+- **细节**：点击区域九宫格自定义、底栏按钮长按拖拽调序、音量键翻页、任何设置都能「只对这本书生效」
 
-- Android 5.0（API 21）及以上
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/read-1.jpg" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/read-2.jpg" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/read-3.jpg" width="200" alt="">
 
-### 获取安装包
+## 格式
 
-1. 前往 [GitHub Releases](https://github.com/hlning/cmbok_app/releases) 下载最新版 APK。
-2. 若无法访问 GitHub，可在 App 内「我的」页面查看备用下载地址。
+EPUB / MOBI / AZW3 / TXT / PDF / CBZ / ZIP 七种格式，导进来就能读。TXT 自动认 UTF-8 和 GBK；EPUB 大文件按需解压，几百兆也是秒开；解析全在本地做，文件不上传到任何地方。
 
-### 安装
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/local-shelf.jpg" width="720" alt="本地书架">
 
-下载 APK 后在手机上点击安装；首次安装需在系统设置中允许「安装未知来源应用」。
+## 听书
 
-## 🚀 快速开始
+六类朗读引擎，断网也能读给你听。打底的是系统朗读：离线、不花流量、不用填密钥；想要更好的声音，可以接微软 Azure、OpenAI 兼容接口、小米 MiMo，或导入网络朗读引擎配置。
 
-1. 打开 App，底部可见 5 个标签：**漫画 / 图书 / 收藏 / 下载 / 我的**。
-2. 在「漫画」或「图书」标签中搜索你想看的作品。
-3. 点击搜索结果进入详情页，选择章节开始阅读。
-4. 阅读过程中可在面板切换阅读模式、字体等。
+- 跟读高亮、自动翻页、睡眠定时（到点是暂停不是停止）
+- 沉浸式播放页与迷你浮动条随时切，息屏和退出阅读器都不断
+- 引擎、语速、音色都能只对当前这本书生效
 
-> 可在「我的 → 设置」中设定默认启动首页。
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/tts-1.jpg" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/tts-2.jpg" width="200" alt="">
 
-## 📖 使用指南
+## 离线
 
-### 📚 漫画
+漫画按话批量下，打包成 EPUB / CBZ / ZIP / PDF，或就留一个图片文件夹。东西落在你指定的目录里，不藏在应用私有目录。
 
-- **搜索**：在「漫画」标签顶部搜索框输入关键词，支持网格 / 列表视图切换。
-- **详情**：点击搜索结果进入详情页，查看简介与章节列表。
-- **阅读**：选择章节进入阅读器，支持翻页 / 拼页两种模式，可在阅读设置中切换。
-- **收藏 / 下载**：详情页可一键收藏或下载章节。
+- 下载去白边：像素级裁掉四周白边再放大，参数存成预设，裁之前先预览
+- 后台下载息屏继续；「仅 Wi-Fi」开了之后流量下自动暂停、回 Wi-Fi 自动接上
+- 换机搬完目录，点一下「扫描存储找回内容」，下载记录自己认回来
 
-### 📖 图书（z-library）
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/trim.jpg" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/trim-2.jpg" width="200" alt="">
 
-- **账号**
-  - 未登录时使用内置账号，每日可下载 **5 本**。
-  - 在「图书」标签登录或注册自有账号，享更高下载额度（**10 本/天**，具体以账号 profile 为准）。
-- **搜索与阅读**：搜索图书 → 进入详情 → 开始阅读。
-- **阅读模式**：翻页（系统字体）/ 仿真翻页（水墨楷体），可在阅读面板切换。
-- **字体**：仿真模式默认楷体，翻页模式默认系统字体，亦可手动选择。
+## 数据
 
-### ⭐ 收藏
+没有账号，数据不过服务器。要多设备同步就自己接 WebDAV，或者指一个本地目录（可以是网盘或 Syncthing 的同步目录）；备份文件能加密码，账号密码这类凭据永远不进备份。
 
-集中展示已收藏的漫画与图书，点击即可继续阅读。
+- 局域网 P2P 传书：手机跟手机、手机跟电脑对传
+- 配好 SMTP 可以把书推送到 Kindle 或任何收邮件的阅读器
 
-### ⬇️ 下载
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/sync.jpg" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/sync-2.jpg" width="200" alt="">
 
-管理所有下载任务，章节下载完成后可离线阅读，无需联网。
+## 历程与计划
 
-### 👤 我的
+单次读超过十五秒就记一笔：累计时长、连续阅读天数、按自然年铺开的热力图，四款整版分享海报（阅读报告 / 书墙 / 热力图 / 票根）。阅读计划分「读完一本」和「每日阅读」，到点发通知提醒，阅读器里还带番茄钟。
 
-- **设置**：阅读设置、显示设置、下载设置。
-- **默认首页**：选择 App 启动后直接进入的标签。
-- **检查更新**：手动检查新版本。
-- **关于**：查看版本与免责声明。
-- **快捷区**：GitHub 仓库、QQ 群。
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/poster.jpg" width="360" alt="分享海报"> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/plan.jpg" width="360" alt="阅读计划">
 
-## ⚙️ 设置说明
+## 主题
 
-| 设置项 | 说明 |
+八套内置主题，不合意就进主题编辑器自己配一套。「背景」和「系统动画」是两个独立开关，两个都关就是完全静止的界面，适合墨水屏设备。
+
+<p align="center">
+  <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/themes.gif" width="820" alt="八套内置主题轮播">
+</p>
+
+## 藏起来的功能
+
+软件里有一批不太容易发现的操作，遇到「这个功能怎么没有」的时候，不妨先长按试试：
+
+- 长按底部的「漫画 / 图书」：直接续读最近一次看的那本
+- 长按番茄钟：自定义专注时长、循环次数与休息时长
+- 阅读器里长按下拉：添加或取消当前位置的书签
+- 长按阅读器面板的按钮：拖着换位置
+- 书架右边缘左滑：呼出竖型分类导航栏
+- 图书与漫画页右上角的按钮：左右滑动切换功能，下滑显示底部按钮
+- 漫画聚搜页下拉：切到复搜，多选标签同时搜多个来源
+
+还有一个彩蛋藏在软件里，自己找找看。
+
+---
+
+## 下载
+
+三个平台的安装包都托管在网盘，任选一个顺手的：
+
+| 网盘 | 地址 |
 | --- | --- |
-| 阅读设置 | 漫画阅读模式（翻页 / 拼页）、图书阅读模式（翻页 / 仿真） |
-| 显示设置 | 明 / 暗主题、漫画网格 / 列表视图 |
-| 下载设置 | 下载相关选项 |
+| 光鸭云盘 | [点此下载](https://www.guangyapan.com/s/1942586733185413185_apaoPfuQ0RoGwQTM)（无需提取码） |
+| 百度网盘 | [点此下载](https://pan.baidu.com/s/1-tYwegrQJtQ3VHVqNOxj1A?pwd=fds7)（提取码 fds7） |
+| 夸克网盘 | [点此下载](https://pan.quark.cn/s/c4d45ac3fb57#/list/share)（无需提取码） |
+| 迅雷网盘 | [点此下载](https://pan.xunlei.com/s/VOzYJzL8LuhuGwVIkywQBbtSA1?pwd=93na#)（提取码 93na） |
+| UC网盘 | [点此下载](https://drive.uc.cn/s/00d2e8642f9d4)（无需提取码） |
 
-## ❓ 常见问题
+iOS 包为未签名 ipa，需用自己的 Apple ID 签名后安装。
 
-**Q：图书下载提示「今日额度已用完」？**
-A：内置账号每日 5 本；登录或注册自有账号可享更高额度（10 本/天），额度每日重置。
+## 交流
 
-**Q：z-library 登录失败？**
-A：请检查邮箱与密码是否正确。z-library 域名可能变化，App 会自动跟随重定向，必要时可稍后重试。
+- **GitHub**：[hlning/cmbok_app](https://github.com/hlning/cmbok_app)
+- **Telegram**：[加入群组](https://t.me/+yUxmPm06kHMwYzll)
+- **QQ 群**：`1092280445`（若已满，最新群号见软件内「我的」页面）
 
-**Q：如何离线阅读？**
-A：在详情页下载章节后，前往「下载」标签即可离线阅读。
+## 常见问题
 
-**Q：阅读进度会丢失吗？**
-A：进度保存在本地，正常使用不会丢失；但清除应用数据会一并清除进度。
+**装完之后书架是空的？**
+软件本身不带任何内容。本机的书直接导入就能读；在线内容要你自己在「我的」里配好来源，配完搜索页才会有东西。
 
-**Q：如何反馈问题或获取更新？**
-A：前往 [GitHub 仓库](https://github.com/hlning/cmbok_app) 提 Issue，或加入 QQ 群 `1003773005`。
+**换手机怎么把东西搬过去？**
+把下载目录整个搬到新设备，在同步设置里恢复一份备份，然后点「扫描存储找回内容」。
 
-## 🔒 免责声明
+**为什么要存储权限？**
+下载的漫画和导入的书都放在你自己指定的目录。这样换设备直接搬走，或交给网盘同步，都不用再导出一遍。
 
-本应用（Cmbok）仅供个人学习与技术研究使用，严禁用于任何商业或非法用途。应用内所有漫画、图书及相关内容均来自第三方，本应用不存储、不上传任何内容，亦不对其内容合法性、准确性负责。所有版权归原作者或原平台所有。若发现任何侵权或不合规内容，请联系原作者或原平台处理，或反馈至本应用予以移除。使用本应用产生的一切后果由使用者自行承担。
+**收费吗，以后会加广告吗？**
+免费，MIT 开源。没有广告、内购和积分墙，也没有需要登录的账号体系。
 
-## 📄 开源协议
+## 免责声明
+
+本软件免费开源，仅供个人学习研究与交流，禁止商业用途。软件不提供任何内容，第三方源由使用者自行配置；使用过程中的搜索、阅读、下载等行为均由使用者自主决定并承担相应责任。软件按「现状」提供，不对连续可用性、及时性与安全性作担保。
+
+## 开源协议
 
 本项目基于 [MIT License](https://opensource.org/licenses/MIT) 开源。
 
