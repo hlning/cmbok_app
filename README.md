@@ -14,7 +14,7 @@
 
 不用注册账号 · 无广告无内购 · 不收集使用数据 · MIT 开源
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/hero-desktop.jpg" width="800" alt="Cmbok 桌面版">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/hero.webp" width="800" alt="Cmbok 桌面版与手机版">
 
 </div>
 
@@ -24,7 +24,7 @@
 
 漫画竖着翻、图书按字排版，两边的阅读器是分开做的，不是一套凑合两用。但书架、收藏、阅读进度、浏览记录和阅读历程是同一套，找书不用分两处。
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/shelf.jpg" width="720" alt="书架：漫画与图书混排">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/shelf.webp" width="720" alt="书架：漫画与图书混排">
 
 ## 阅读
 
@@ -41,7 +41,7 @@
 
 EPUB / MOBI / AZW3 / TXT / PDF / CBZ / ZIP 七种格式，导进来就能读。TXT 自动认 UTF-8 和 GBK；EPUB 大文件按需解压，几百兆也是秒开；解析全在本地做，文件不上传到任何地方。
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/local-shelf.jpg" width="720" alt="本地书架">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/local-shelf.webp" width="720" alt="本地书架">
 
 ## 听书
 
@@ -76,14 +76,14 @@ EPUB / MOBI / AZW3 / TXT / PDF / CBZ / ZIP 七种格式，导进来就能读。T
 
 单次读超过十五秒就记一笔：累计时长、连续阅读天数、按自然年铺开的热力图，四款整版分享海报（阅读报告 / 书墙 / 热力图 / 票根）。阅读计划分「读完一本」和「每日阅读」，到点发通知提醒，阅读器里还带番茄钟。
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/poster.jpg" width="360" alt="分享海报"> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/plan.jpg" width="360" alt="阅读计划">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/poster.webp" width="360" alt="分享海报"> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/plan.webp" width="360" alt="阅读计划">
 
 ## 主题
 
 八套内置主题，不合意就进主题编辑器自己配一套。「背景」和「系统动画」是两个独立开关，两个都关就是完全静止的界面，适合墨水屏设备。
 
 <p align="center">
-  <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/themes.gif" width="820" alt="八套内置主题轮播">
+  <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/themes-v2.gif" width="820" alt="八套内置主题轮播">
 </p>
 
 ## 藏起来的功能
