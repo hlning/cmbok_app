@@ -1,0 +1,24 @@
+{
+  "items": [
+    {
+      "image": "https://cmbok.oss-cn-beijing.aliyuncs.com/update_notes/2.0.6/Screenshot_2026-09-02-17-46-18-74_05d76c3ed3ccc06.jpg",
+      "title": "听书引擎",
+      "text": "支持朗读功能，可配置多种联网引擎，配置丰富"
+    },
+    {
+      "image": "https://cmbok.oss-cn-beijing.aliyuncs.com/update_notes/2.0.6/Screenshot_2026-09-02-17-46-31-62_05d76c3ed3ccc06.jpg",
+      "title": "阅读计划",
+      "text": "支持自定义计划，通知；定制属于自己的阅读计划"
+    },
+    {
+      "image": "https://cmbok.oss-cn-beijing.aliyuncs.com/update_notes/2.0.6/Screenshot_2026-09-02-17-46-34-35_05d76c3ed3ccc06.jpg",
+      "title": "阅读历程",
+      "text": "可详细看最近阅读记录，时间线，累计阅读时间"
+    },
+    {
+      "image": "https://cmbok.oss-cn-beijing.aliyuncs.com/update_notes/2.0.6/Screenshot_2026-09-05-20-44-12-08_05d76c3ed3ccc06.jpg",
+      "title": "书架大文件夹",
+      "text": "可收录同一系列书籍到同一个文件夹，不建书架更方便"
+    }
+  ]
+}
