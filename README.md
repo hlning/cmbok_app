@@ -14,7 +14,7 @@
 
 不用注册账号 · 无广告无内购 · 不收集使用数据 · MIT 开源
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/hero.webp" width="800" alt="Cmbok 桌面版与手机版">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/hero.webp?v=20260905" width="800" alt="Cmbok 桌面版与手机版">
 
 </div>
 
@@ -24,7 +24,7 @@
 
 漫画竖着翻、图书按字排版，两边的阅读器是分开做的，不是一套凑合两用。但书架、收藏、阅读进度、浏览记录和阅读历程是同一套，找书不用分两处。
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/shelf.webp" width="720" alt="书架：漫画与图书混排">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/shelf.webp?v=20260905" width="720" alt="书架：漫画与图书混排">
 
 ## 阅读
 
@@ -35,13 +35,13 @@
 - **纸与字**：四种底色、14 张内置背景图、自定义图片；字体指一个文件夹整批导入
 - **细节**：点击区域九宫格自定义、底栏按钮长按拖拽调序、音量键翻页、任何设置都能「只对这本书生效」
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/read-1.jpg" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/read-2.jpg" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/read-3.jpg" width="200" alt="">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/read-1.jpg?v=20260905" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/read-2.jpg" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/read-3.jpg?v=20260905" width="200" alt="">
 
 ## 格式
 
 EPUB / MOBI / AZW3 / TXT / PDF / CBZ / ZIP 七种格式，导进来就能读。TXT 自动认 UTF-8 和 GBK；EPUB 大文件按需解压，几百兆也是秒开；解析全在本地做，文件不上传到任何地方。
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/local-shelf.webp" width="720" alt="本地书架">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/local-shelf.webp?v=20260905" width="720" alt="本地书架">
 
 ## 听书
 
@@ -51,7 +51,7 @@ EPUB / MOBI / AZW3 / TXT / PDF / CBZ / ZIP 七种格式，导进来就能读。T
 - 沉浸式播放页与迷你浮动条随时切，息屏和退出阅读器都不断
 - 引擎、语速、音色都能只对当前这本书生效
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/tts-1.jpg" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/tts-2.jpg" width="200" alt="">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/tts-1.jpg?v=20260905" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/tts-2.jpg?v=20260905" width="200" alt="">
 
 ## 离线
 
@@ -61,7 +61,7 @@ EPUB / MOBI / AZW3 / TXT / PDF / CBZ / ZIP 七种格式，导进来就能读。T
 - 后台下载息屏继续；「仅 Wi-Fi」开了之后流量下自动暂停、回 Wi-Fi 自动接上
 - 换机搬完目录，点一下「扫描存储找回内容」，下载记录自己认回来
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/trim.jpg" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/trim-2.jpg" width="200" alt="">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/trim.jpg?v=20260905" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/trim-2.jpg?v=20260905" width="200" alt="">
 
 ## 数据
 
@@ -70,20 +70,20 @@ EPUB / MOBI / AZW3 / TXT / PDF / CBZ / ZIP 七种格式，导进来就能读。T
 - 局域网 P2P 传书：手机跟手机、手机跟电脑对传
 - 配好 SMTP 可以把书推送到 Kindle 或任何收邮件的阅读器
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/sync.jpg" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/sync-2.jpg" width="200" alt="">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/sync.jpg?v=20260905" width="200" alt=""> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/sync-2.jpg?v=20260905" width="200" alt="">
 
 ## 历程与计划
 
 单次读超过十五秒就记一笔：累计时长、连续阅读天数、按自然年铺开的热力图，四款整版分享海报（阅读报告 / 书墙 / 热力图 / 票根）。阅读计划分「读完一本」和「每日阅读」，到点发通知提醒，阅读器里还带番茄钟。
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/poster.webp" width="360" alt="分享海报"> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/plan.webp" width="360" alt="阅读计划">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/poster.webp?v=20260905" width="360" alt="分享海报"> <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/plan.webp?v=20260905" width="360" alt="阅读计划">
 
 ## 主题
 
 八套内置主题，不合意就进主题编辑器自己配一套。「背景」和「系统动画」是两个独立开关，两个都关就是完全静止的界面，适合墨水屏设备。
 
 <p align="center">
-  <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/themes-v2.gif" width="820" alt="八套内置主题轮播">
+  <img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/themes-v2.gif?v=20260905" width="820" alt="八套内置主题轮播">
 </p>
 
 ## 藏起来的功能
