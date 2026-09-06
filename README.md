@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/logo.png" width="96" alt="Cmbok">
+<img src="https://cmbok.oss-cn-beijing.aliyuncs.com/readme/logo.png?v=20260905" width="96" alt="Cmbok">
 
 # Cmbok
 
