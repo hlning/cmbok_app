@@ -14,5 +14,9 @@
   {
     'name':'雯雯',
     'icon':'https://gcore.jsdelivr.net/gh/hlning/cmbok_app@main/assets/acks/wenwen.jpg'
+  },
+  {
+    'name':'技师',
+    'icon':'https://gcore.jsdelivr.net/gh/hlning/cmbok_app@main/assets/acks/jishi.jpg'
   }
 ]
