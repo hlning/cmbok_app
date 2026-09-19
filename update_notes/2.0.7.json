@@ -1,0 +1,24 @@
+{
+  "items": [
+    {
+      "image": "https://cmbok.oss-cn-beijing.aliyuncs.com/update_notes/2.0.7/Screenshot_2026-09-19-20-22-19-95_05d76c3ed3ccc06.jpg",
+      "title": "书源",
+      "text": "兼容阅读书源，现在还有不少不能兼容，不要问为什么，因为做不到也没有那么多精力一个个测试调整"
+    },
+    {
+      "image": "https://cmbok.oss-cn-beijing.aliyuncs.com/update_notes/2.0.7/Screenshot_2026-09-19-20-22-10-91_05d76c3ed3ccc06.jpg",
+      "title": "代理功能",
+      "text": "支持socks5代理，可单独给漫画源和书源配置代理"
+    },
+    {
+      "image": "https://cmbok.oss-cn-beijing.aliyuncs.com/update_notes/2.0.7/Screenshot_2026-09-19-20-24-13-44_05d76c3ed3ccc06.jpg",
+      "title": "漫画横屏拼页",
+      "text": "新增漫画横屏左右连续拼页"
+    },
+    {
+      "image": "https://cmbok.oss-cn-beijing.aliyuncs.com/update_notes/2.0.7/Screenshot_2026-09-19-20-26-07-52_05d76c3ed3ccc06.jpg",
+      "title": "书源段评",
+      "text": "支持书源段评功能，可阅读时查看段评"
+    }
+  ]
+}
